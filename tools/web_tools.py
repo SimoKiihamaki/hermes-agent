@@ -68,6 +68,7 @@ Features:
 """
 
 import json
+import os
 import sqlite3
 import hashlib
 import threading

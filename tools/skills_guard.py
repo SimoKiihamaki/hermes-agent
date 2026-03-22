@@ -728,7 +728,7 @@ def _check_structure(skill_dir: Path) -> List[Finding]:
     - Symlinks pointing outside the skill directory
     - Individual files that are too large
     """
-    findings = []
+    findings: List[Finding] = []
     file_count = 0
     total_size = 0
 

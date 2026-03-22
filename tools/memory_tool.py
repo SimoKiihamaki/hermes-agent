@@ -97,7 +97,7 @@ class MemoryStore:
         Tool responses always reflect this live state.
     """
 
-    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
+    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375) -> None:
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
@@ -105,7 +105,7 @@ class MemoryStore:
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
 
-    def load_from_disk(self):
+    def load_from_disk(self) -> None:
         """Load entries from MEMORY.md and USER.md, capture system prompt snapshot."""
         MEMORY_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -146,7 +146,7 @@ class MemoryStore:
             return MEMORY_DIR / "USER.md"
         return MEMORY_DIR / "MEMORY.md"
 
-    def _reload_target(self, target: str):
+    def _reload_target(self, target: str) -> None:
         """Re-read entries from disk into in-memory state.
 
         Called under file lock to get the latest state before mutating.
@@ -155,7 +155,7 @@ class MemoryStore:
         fresh = list(dict.fromkeys(fresh))  # deduplicate
         self._set_entries(target, fresh)
 
-    def save_to_disk(self, target: str):
+    def save_to_disk(self, target: str) -> None:
         """Persist entries to the appropriate file. Called after every mutation."""
         MEMORY_DIR.mkdir(parents=True, exist_ok=True)
         self._write_file(self._path_for(target), self._entries_for(target))
@@ -165,7 +165,7 @@ class MemoryStore:
             return self.user_entries
         return self.memory_entries
 
-    def _set_entries(self, target: str, entries: List[str]):
+    def _set_entries(self, target: str, entries: List[str]) -> None:
         if target == "user":
             self.user_entries = entries
         else:

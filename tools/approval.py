@@ -79,7 +79,7 @@ def _approval_key_aliases(pattern_key: str) -> set[str]:
 # Detection
 # =========================================================================
 
-def detect_dangerous_command(command: str) -> tuple:
+def detect_dangerous_command(command: str) -> tuple[bool, Optional[str], Optional[str]]:
     """Check if a command matches any dangerous patterns.
 
     Returns:

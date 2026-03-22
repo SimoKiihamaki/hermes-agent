@@ -29,8 +29,18 @@ class ToolEntry:
         "requires_env", "is_async", "description", "emoji",
     )
 
-    def __init__(self, name, toolset, schema, handler, check_fn,
-                 requires_env, is_async, description, emoji):
+    def __init__(
+        self,
+        name: str,
+        toolset: str,
+        schema: dict,
+        handler: Callable,
+        check_fn: Optional[Callable],
+        requires_env: List[str],
+        is_async: bool,
+        description: str,
+        emoji: str,
+    ) -> None:
         self.name = name
         self.toolset = toolset
         self.schema = schema

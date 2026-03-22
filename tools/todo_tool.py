@@ -32,7 +32,7 @@ class TodoStore:
       - status: pending | in_progress | completed | cancelled
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._items: List[Dict[str, str]] = []
 
     def write(self, todos: List[Dict[str, Any]], merge: bool = False) -> List[Dict[str, str]]:

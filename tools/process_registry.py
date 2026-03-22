@@ -104,7 +104,7 @@ class ProcessRegistry:
         "tcsetattr: Inappropriate ioctl for device",
     )
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._running: Dict[str, ProcessSession] = {}
         self._finished: Dict[str, ProcessSession] = {}
         self._lock = threading.Lock()
@@ -307,7 +307,7 @@ class ProcessRegistry:
 
     # ----- Reader / Poller Threads -----
 
-    def _reader_loop(self, session: ProcessSession):
+    def _reader_loop(self, session: ProcessSession) -> None:
         """Background thread: read stdout from a local Popen process."""
         first_chunk = True
         try:
@@ -336,7 +336,7 @@ class ProcessRegistry:
 
     def _env_poller_loop(
         self, session: ProcessSession, env: Any, log_path: str, pid_path: str
-    ):
+    ) -> None:
         """Background thread: poll a sandbox log file for non-local backends."""
         while not session.exited:
             time.sleep(2)  # Poll every 2 seconds
@@ -378,7 +378,7 @@ class ProcessRegistry:
                 self._move_to_finished(session)
                 return
 
-    def _pty_reader_loop(self, session: ProcessSession):
+    def _pty_reader_loop(self, session: ProcessSession) -> None:
         """Background thread: read output from a PTY process."""
         pty = session._pty
         try:
@@ -408,7 +408,7 @@ class ProcessRegistry:
         session.exit_code = pty.exitstatus if hasattr(pty, 'exitstatus') else -1
         self._move_to_finished(session)
 
-    def _move_to_finished(self, session: ProcessSession):
+    def _move_to_finished(self, session: ProcessSession) -> None:
         """Move a session from running to finished."""
         with self._lock:
             self._running.pop(session.id, None)
@@ -673,7 +673,7 @@ class ProcessRegistry:
 
     # ----- Cleanup / Pruning -----
 
-    def _prune_if_needed(self):
+    def _prune_if_needed(self) -> None:
         """Remove oldest finished sessions if over MAX_PROCESSES. Must hold _lock."""
         # First prune expired finished sessions
         now = time.time()
@@ -690,14 +690,14 @@ class ProcessRegistry:
             oldest_id = min(self._finished, key=lambda sid: self._finished[sid].started_at)
             del self._finished[oldest_id]
 
-    def cleanup_expired(self):
+    def cleanup_expired(self) -> None:
         """Public method to prune expired finished sessions."""
         with self._lock:
             self._prune_if_needed()
 
     # ----- Checkpoint (crash recovery) -----
 
-    def _write_checkpoint(self):
+    def _write_checkpoint(self) -> None:
         """Write running process metadata to checkpoint file atomically."""
         try:
             with self._lock:
@@ -847,7 +847,7 @@ PROCESS_SCHEMA = {
 }
 
 
-def _handle_process(args, **kw):
+def _handle_process(args, **kw) -> str:
     import json as _json
     task_id = kw.get("task_id")
     action = args.get("action", "")

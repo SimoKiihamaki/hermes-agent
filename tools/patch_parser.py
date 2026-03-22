@@ -210,7 +210,7 @@ def parse_v4a_patch(patch_content: str) -> Tuple[List[PatchOperation], Optional[
 
 
 def apply_v4a_operations(operations: List[PatchOperation], 
-                          file_ops: Any) -> PatchResult:
+                          file_ops: Any) -> "PatchResult":
     """
     Apply V4A patch operations using a file operations interface.
     

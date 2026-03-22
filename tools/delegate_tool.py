@@ -265,7 +265,7 @@ def _run_single_child(
     # mutated the global. This is the correct parent toolset, not the child's.
     import model_tools
     _saved_tool_names = getattr(child, "_delegate_saved_tool_names",
-                                list(model_tools._last_resolved_tool_names))
+                                list(model_tools._last_resolved_tool_names))  # noqa: F841
 
     try:
         result = child.run_conversation(user_message=goal)

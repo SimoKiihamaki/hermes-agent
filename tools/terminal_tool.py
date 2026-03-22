@@ -1238,7 +1238,7 @@ def check_terminal_requirements() -> bool:
             return True
 
         elif env_type == "daytona":
-            from daytona import Daytona
+            from daytona import Daytona  # noqa: F401 - import used for availability check
             return os.getenv("DAYTONA_API_KEY") is not None
 
         else:

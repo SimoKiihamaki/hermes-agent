@@ -53,8 +53,7 @@ else:
 
 # Import agent and tools
 from run_agent import AIAgent
-from model_tools import get_tool_definitions, check_toolset_requirements
-from tools.rl_training_tool import check_rl_api_keys, get_missing_keys
+from tools.rl_training_tool import get_missing_keys
 
 
 # ============================================================================
@@ -413,7 +412,7 @@ def main(
                 
                 # Run the agent
                 print("\n" + "=" * 60)
-                response = agent.run_conversation(user_input)
+                _response = agent.run_conversation(user_input)  # noqa: F841
                 print("\n" + "=" * 60)
                 
             except KeyboardInterrupt:
@@ -430,7 +429,7 @@ def main(
         print("-" * 40)
         
         try:
-            response = agent.run_conversation(task)
+            _response = agent.run_conversation(task)
             print("\n" + "=" * 60)
             print("✅ Task completed")
         except KeyboardInterrupt:

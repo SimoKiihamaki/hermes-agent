@@ -682,7 +682,6 @@ def stream_tts_to_speaker(
                     for chunk in audio_iter:
                         if stop_event.is_set():
                             break
-                        import numpy as _np
                         audio_array = _np.frombuffer(chunk, dtype=_np.int16)
                         output_stream.write(audio_array.reshape(-1, 1))
                 else:

@@ -31,15 +31,12 @@ import json
 import logging
 import os
 import platform
-import signal
 import sys
 import time
 import threading
 import atexit
 import shutil
 import subprocess
-import tempfile
-import uuid
 from pathlib import Path
 from typing import Optional, Dict, Any
 
@@ -131,11 +128,8 @@ def set_approval_callback(cb):
 
 # Dangerous command detection + approval now consolidated in tools/approval.py
 from tools.approval import (
-    detect_dangerous_command as _detect_dangerous_command,
     check_dangerous_command as _check_dangerous_command_impl,
     check_all_command_guards as _check_all_guards_impl,
-    load_permanent_allowlist as _load_permanent_allowlist,
-    DANGEROUS_PATTERNS,
 )
 
 
@@ -190,7 +184,6 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
     so the prompt integrates with prompt_toolkit's UI.  Otherwise reads
     directly from /dev/tty with echo disabled.
     """
-    import sys
     import time as time_module
     
     # Use the registered callback when available (prompt_toolkit-compatible)

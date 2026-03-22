@@ -43,14 +43,6 @@ from typing import Optional, Dict, Any
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Global interrupt event: set by the agent when a user interrupt arrives.
-# The terminal tool polls this during command execution so it can kill
-# long-running subprocesses immediately instead of blocking until timeout.
-# ---------------------------------------------------------------------------
-from tools.interrupt import set_interrupt as set_interrupt_event, is_interrupted, _interrupt_event
-
-
 # Add mini-swe-agent to path if not installed. In git worktrees the populated
 # submodule may live in the main checkout rather than the worktree itself.
 from minisweagent_path import ensure_minisweagent_on_path

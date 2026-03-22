@@ -410,17 +410,12 @@ def check_image_generation_requirements() -> bool:
     Returns:
         bool: True if requirements are met, False otherwise
     """
-    try:
-        # Check API key
-        if not check_fal_api_key():
-            return False
-        
-        # Check if fal_client is available
-        import fal_client
-        return True
-        
-    except ImportError:
+    # Check API key
+    if not check_fal_api_key():
         return False
+    
+    # fal_client availability is checked at module import time
+    return True
 
 
 def get_debug_session_info() -> Dict[str, Any]:
@@ -451,14 +446,8 @@ if __name__ == "__main__":
     else:
         print("✅ FAL.ai API key found")
     
-    # Check if fal_client is available
-    try:
-        import fal_client
-        print("✅ fal_client library available")
-    except ImportError:
-        print("❌ fal_client library not found")
-        print("Please install: pip install fal-client")
-        exit(1)
+    # Check if fal_client is available (already imported at module level)
+    print("✅ fal_client library available")
     
     print("🛠️ Image generation tools ready for use!")
     print(f"🤖 Using model: {DEFAULT_MODEL}")

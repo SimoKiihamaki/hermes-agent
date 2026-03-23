@@ -56,6 +56,8 @@ _HERMES_CORE_TOOLS = [
     "clarify",
     # Code execution + delegation
     "execute_code", "delegate_task",
+    # Autonomous coding (AutoDev Phase 6)
+    "autodev",
     # Cronjob management
     "cronjob",
     # Cross-platform messaging (gated on gateway running via check_fn)
@@ -193,6 +195,12 @@ TOOLSETS = {
     "delegation": {
         "description": "Spawn subagents with isolated context for complex subtasks",
         "tools": ["delegate_task"],
+        "includes": []
+    },
+
+    "autodev": {
+        "description": "Autonomous coding agent with file/git/terminal tools via MCP integration",
+        "tools": ["autodev"],
         "includes": []
     },
 

@@ -154,6 +154,16 @@ from .delegate_tool import (
     DELEGATE_TASK_SCHEMA,
 )
 
+# AutoDev autonomous coding pipeline (Phase 6 integration)
+from .hermes_autodev_tool import (
+    autodev,
+    autodev_delegate_handler,
+    check_autodev_requirements,
+    AUTODEV_SCHEMA,
+    AUTODEV_TOOLSET,
+    AutoDevSession,
+)
+
 # File tools have no external requirements - they use the terminal backend
 def check_file_requirements():
     """File tools only require terminal backend to be available."""
@@ -258,5 +268,12 @@ __all__ = [
     'delegate_task',
     'check_delegate_requirements',
     'DELEGATE_TASK_SCHEMA',
+    # AutoDev autonomous coding
+    'autodev',
+    'autodev_delegate_handler',
+    'check_autodev_requirements',
+    'AUTODEV_SCHEMA',
+    'AUTODEV_TOOLSET',
+    'AutoDevSession',
 ]
 

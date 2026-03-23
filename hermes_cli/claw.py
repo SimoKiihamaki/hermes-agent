@@ -206,7 +206,6 @@ def _print_migration_report(report: dict, dry_run: bool):
     skipped = summary.get("skipped", 0)
     conflicts = summary.get("conflict", 0)
     errors = summary.get("error", 0)
-    total = migrated + skipped + conflicts + errors
 
     print()
     if dry_run:

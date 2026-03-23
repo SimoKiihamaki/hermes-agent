@@ -63,7 +63,6 @@ ExecutionResult = None
 
 try:
     from integration import (
-        AutoDevPipeline,
         CoderPipeline,
         PipelineConfig,
         ExecutionResult,

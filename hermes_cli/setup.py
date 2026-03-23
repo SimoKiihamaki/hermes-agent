@@ -1975,8 +1975,6 @@ def setup_terminal_backend(config: dict):
     terminal_choices.append(f"Keep current ({current_backend})")
     idx_to_backend[keep_current_idx] = current_backend
 
-    default_terminal = backend_to_idx.get(current_backend, 0)
-
     terminal_idx = prompt_choice(
         "Select terminal backend:", terminal_choices, keep_current_idx
     )

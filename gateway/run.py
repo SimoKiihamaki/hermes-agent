@@ -3921,8 +3921,7 @@ class GatewayRunner:
                 old_servers = set(_servers.keys())
 
             # Read new config before shutting down, so we know what will be added/removed
-            new_config = _load_mcp_config()
-            new_server_names = set(new_config.keys())
+            _load_mcp_config()
 
             # Shutdown existing connections
             await loop.run_in_executor(None, shutdown_mcp_servers)
@@ -4430,7 +4429,6 @@ class GatewayRunner:
 
         session_id = watcher["session_id"]
         interval = watcher["check_interval"]
-        session_key = watcher.get("session_key", "")
         platform_name = watcher.get("platform", "")
         chat_id = watcher.get("chat_id", "")
         thread_id = watcher.get("thread_id", "")

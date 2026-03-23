@@ -1130,24 +1130,44 @@ def _parallel_search(query: str, limit: int = 5) -> dict:
         mode = "agentic"
 
     logger.info("Parallel search: '%s' (mode=%s, limit=%d)", query, mode, limit)
-    response = _get_parallel_client().beta.search(
-        search_queries=[query],
-        objective=query,
-        mode=mode,
-        max_results=min(limit, 20),
-    )
+    
+    try:
+        client = _get_parallel_client()
+        if client is None:
+            return {"error": "Parallel client not initialized", "success": False}
+        
+        response = client.beta.search(
+            search_queries=[query],
+            objective=query,
+            mode=mode,
+            max_results=min(limit, 20),
+        )
 
-    web_results = []
-    for i, result in enumerate(response.results or []):
-        excerpts = result.excerpts or []
-        web_results.append({
-            "url": result.url or "",
-            "title": result.title or "",
-            "description": " ".join(excerpts) if excerpts else "",
-            "position": i + 1,
-        })
+        if response is None:
+            logger.error("Parallel search returned None response")
+            return {"error": "Parallel search returned no response", "success": False}
 
-    return {"success": True, "data": {"web": web_results}}
+        web_results = []
+        for i, result in enumerate(response.results or []):
+            excerpts = result.excerpts or []
+            web_results.append({
+                "url": result.url or "",
+                "title": result.title or "",
+                "description": " ".join(excerpts) if excerpts else "",
+                "position": i + 1,
+            })
+
+        return {"success": True, "data": {"web": web_results}}
+    
+    except AttributeError as e:
+        # Catch "NoneType has no attribute" errors from SDK internals
+        error_msg = f"Parallel SDK error: {str(e)}"
+        logger.error(error_msg)
+        return {"error": error_msg, "success": False}
+    except Exception as e:
+        error_msg = f"Parallel search failed: {str(e)}"
+        logger.error(error_msg)
+        return {"error": error_msg, "success": False}
 
 
 async def _parallel_extract(urls: List[str]) -> List[Dict[str, Any]]:

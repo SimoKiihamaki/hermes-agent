@@ -349,8 +349,6 @@ class TrajectoryCompressor:
         which handles auth, headers, and provider detection internally.
         For custom endpoints, falls back to raw client construction.
         """
-        from agent.auxiliary_client import call_llm, async_call_llm  # noqa: F401
-
         provider = self._detect_provider()
         if provider:
             # Store provider for use in _generate_summary calls

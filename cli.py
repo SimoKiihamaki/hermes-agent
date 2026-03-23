@@ -457,11 +457,7 @@ from run_agent import AIAgent
 from model_tools import get_tool_definitions, get_toolset_for_tool
 
 # Extracted CLI modules (Phase 3)
-from hermes_cli.banner import (
-    cprint as _cprint, _GOLD, _BOLD, _DIM, _RST,
-    HERMES_AGENT_LOGO, HERMES_CADUCEUS, COMPACT_BANNER,
-    build_welcome_banner,
-)
+from hermes_cli.banner import build_welcome_banner
 from hermes_cli.commands import SlashCommandCompleter, SlashCommandAutoSuggest
 from toolsets import get_all_toolsets, get_toolset_info, validate_toolset
 
@@ -3342,7 +3338,6 @@ class HermesCLI:
         
         try:
             config = load_gateway_config()
-            _connected = config.get_connected_platforms()
             
             print("  Messaging Platform Configuration:")
             print("  " + "-" * 55)
@@ -5410,7 +5405,6 @@ class HermesCLI:
             _streaming_box_opened = False
             text_queue = None
             tts_thread = None
-            stream_callback = None
             stop_event = None
 
             if self._voice_tts:
@@ -5459,6 +5453,8 @@ class HermesCLI:
                 def stream_callback(delta: str):
                     if text_queue is not None:
                         text_queue.put(delta)
+            else:
+                stream_callback = None
 
             # When voice mode is active, prepend a brief instruction so the
             # model responds concisely. The prefix is API-call-local only —
@@ -6720,7 +6716,6 @@ class HermesCLI:
             title = '🔐 Sudo Password Required'
             body = 'Enter password below (hidden), or press Enter to skip'
             box_width = _panel_box_width(title, [body])
-            _inner = max(0, box_width - 2)  # noqa: F841 - reserved for future use
             lines = []
             lines.append(('class:sudo-border', '╭─ '))
             lines.append(('class:sudo-title', title))

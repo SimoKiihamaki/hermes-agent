@@ -451,8 +451,11 @@ def run_doctor(args):
             check_fail("DAYTONA_API_KEY not set", "(required for TERMINAL_ENV=daytona)")
             issues.append("Set DAYTONA_API_KEY environment variable")
         try:
-            from daytona import Daytona
-            check_ok("daytona SDK", "(installed)")
+            import importlib.util
+            if importlib.util.find_spec("daytona") is not None:
+                check_ok("daytona SDK", "(installed)")
+            else:
+                raise ImportError
         except ImportError:
             check_fail("daytona SDK not installed", "(pip install daytona)")
             issues.append("Install daytona SDK: pip install daytona")

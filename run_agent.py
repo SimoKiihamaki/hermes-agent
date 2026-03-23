@@ -6975,7 +6975,6 @@ class AIAgent:
                                     "content": f"Error executing tool: {error_msg}",
                                 }
                                 messages.append(err_msg)
-                        _pending_handled = True  # noqa: F841
                     break
                 
                 # Non-tool errors don't need a synthetic message injected.

@@ -41,7 +41,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +67,6 @@ try:
         CoderPipeline,
         PipelineConfig,
         ExecutionResult,
-        create_coder_pipeline,
     )
     AUTODEV_AVAILABLE = True
     logger.info("AutoDev integration loaded successfully")

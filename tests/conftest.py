@@ -128,15 +128,16 @@ def _ensure_current_event_loop(request):
         yield
         return
 
+    # Python 3.12+ deprecates get_event_loop() when no loop is running.
+    # Check for running loop first, then fall back to creating a new one.
     try:
-        loop = asyncio.get_event_loop_policy().get_event_loop()
+        loop = asyncio.get_running_loop()
+        created = False
     except RuntimeError:
-        loop = None
-
-    created = loop is None or loop.is_closed()
-    if created:
+        # No running loop - create a new one
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
+        created = True
 
     try:
         yield

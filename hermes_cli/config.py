@@ -311,6 +311,18 @@ DEFAULT_CONFIG = {
         "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)
     },
 
+    # AutoDev — autonomous coding agent with MCP integration (Phase 6)
+    # Provides file operations, git integration, and terminal commands via MCP.
+    # Requires ANTHROPIC_API_KEY and AutoDev installed at ~/Projects/autodev/
+    "autodev": {
+        "enabled": True,
+        "max_iterations": 20,           # Maximum tool calling iterations per task
+        "default_model": "claude-sonnet-4-20250514",  # Model for AutoDev pipeline
+        "mcp_config_path": "",          # Custom MCP config path (empty = auto-detect)
+        "workspace": ".",               # Default workspace for autodev tasks
+        "timeout_seconds": 300,         # Task execution timeout
+    },
+
     # Ephemeral prefill messages file — JSON list of {role, content} dicts
     # injected at the start of every API call for few-shot priming.
     # Never saved to sessions, logs, or trajectories.

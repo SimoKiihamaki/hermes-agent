@@ -40,6 +40,35 @@ def _isolate_hermes_home(tmp_path, monkeypatch):
     monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
 
 
+# Provider-related environment variables that must be isolated between tests
+# to prevent pollution when running with pytest-xdist
+PROVIDER_ENV_VARS = (
+    "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY",
+    "KIMI_API_KEY", "KIMI_BASE_URL", "MINIMAX_API_KEY", "MINIMAX_CN_API_KEY",
+    "AI_GATEWAY_API_KEY", "AI_GATEWAY_BASE_URL",
+    "KILOCODE_API_KEY", "KILOCODE_BASE_URL",
+    "DASHSCOPE_API_KEY", "OPENCODE_ZEN_API_KEY", "OPENCODE_GO_API_KEY",
+    "NOUS_API_KEY", "GITHUB_TOKEN", "GH_TOKEN", "COPILOT_GITHUB_TOKEN",
+    "OPENAI_BASE_URL", "HERMES_COPILOT_ACP_COMMAND", "COPILOT_CLI_PATH",
+    "HERMES_COPILOT_ACP_ARGS", "COPILOT_ACP_BASE_URL",
+)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_provider_env(monkeypatch):
+    """Clear all provider-related environment variables before each test.
+
+    This fixture runs automatically for all tests to prevent environment
+    variable pollution between parallel test workers (pytest-xdist).
+    """
+    for key in PROVIDER_ENV_VARS:
+        monkeypatch.delenv(key, raising=False)
+    # Mock auth store to prevent file-based state leakage
+    monkeypatch.setattr("hermes_cli.auth._load_auth_store", lambda: {})
+
+
 @pytest.fixture()
 def tmp_dir(tmp_path):
     """Provide a temporary directory that is cleaned up automatically."""

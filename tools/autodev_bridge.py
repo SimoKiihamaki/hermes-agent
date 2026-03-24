@@ -19,8 +19,8 @@ from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# Add autodev to path if available
-AUTODEV_PATH = os.path.expanduser("~/Projects/autodev/src")
+# Add autodev to path if available (configurable via env)
+AUTODEV_PATH = os.environ.get("AUTODEV_PATH", os.path.expanduser("~/Projects/autodev/src"))
 if os.path.exists(AUTODEV_PATH) and AUTODEV_PATH not in sys.path:
     sys.path.insert(0, AUTODEV_PATH)
 

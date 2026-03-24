@@ -57,7 +57,7 @@ PROVIDER_ENV_VARS = (
 
 
 @pytest.fixture(autouse=True)
-def _isolate_provider_env(monkeypatch):
+def _isolate_provider_env(monkeypatch, request):
     """Clear all provider-related environment variables before each test.
 
     This fixture runs automatically for all tests to prevent environment
@@ -65,8 +65,22 @@ def _isolate_provider_env(monkeypatch):
     """
     for key in PROVIDER_ENV_VARS:
         monkeypatch.delenv(key, raising=False)
-    # Mock auth store to prevent file-based state leakage
-    monkeypatch.setattr("hermes_cli.auth._load_auth_store", lambda: {})
+    # Skip auth store mock for tests that need real auth store access
+    # These tests set up their own auth fixtures and need _load_auth_store to work
+    needs_real_auth_patterns = (
+        "test_auth_",
+        "/test_auth_",
+        "test_auxiliary_client",  # Codex token reading tests
+        "test_vision_tools",      # Vision requirements checks
+        "test_tools_config",      # Toolset availability checks
+        "test_setup_model_provider",  # Setup auth state checks
+    )
+    nodeid = request.node.nodeid
+    needs_real_auth = any(pattern in nodeid for pattern in needs_real_auth_patterns)
+    
+    if not needs_real_auth:
+        # Mock auth store to prevent file-based state leakage
+        monkeypatch.setattr("hermes_cli.auth._load_auth_store", lambda: {})
 
 
 @pytest.fixture()

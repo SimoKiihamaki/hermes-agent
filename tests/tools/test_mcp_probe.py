@@ -159,9 +159,14 @@ class TestProbeMcpServerTools:
         """_stop_mcp_loop is called even when probe fails."""
         config = {"github": {"command": "npx", "connect_timeout": 5}}
 
+        def raise_after_consuming_coro(coro, timeout=120):
+            # Close the coroutine to prevent "never awaited" warning
+            coro.close()
+            raise RuntimeError("boom")
+
         with patch("tools.mcp_tool._load_mcp_config", return_value=config), \
              patch("tools.mcp_tool._ensure_mcp_loop"), \
-             patch("tools.mcp_tool._run_on_mcp_loop", side_effect=RuntimeError("boom")), \
+             patch("tools.mcp_tool._run_on_mcp_loop", side_effect=raise_after_consuming_coro), \
              patch("tools.mcp_tool._stop_mcp_loop") as mock_stop:
 
             from tools.mcp_tool import probe_mcp_server_tools

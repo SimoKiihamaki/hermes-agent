@@ -2,6 +2,9 @@
 
 import pytest
 
+# Skip entire module if acp is not installed
+pytest.importorskip("acp")
+
 from acp_adapter.tools import (
     TOOL_KIND_MAP,
     build_tool_complete,

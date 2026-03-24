@@ -4,9 +4,18 @@
 Not a pytest test — runs directly as a script for live testing.
 """
 
+import sys
+from unittest.mock import MagicMock
+
+# Mock fire module if not available to allow collection
+if "fire" not in sys.modules:
+    try:
+        import fire
+    except ImportError:
+        sys.modules["fire"] = MagicMock()
+
 import threading
 import time
-import sys
 import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

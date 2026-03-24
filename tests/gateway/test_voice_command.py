@@ -11,6 +11,13 @@ import pytest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+# Check for optional davey dependency (for DAVE E2EE tests)
+try:
+    import davey
+    HAS_DAVEY = True
+except ImportError:
+    HAS_DAVEY = False
+
 
 def _ensure_discord_mock():
     """Install a lightweight discord mock when discord.py isn't available."""
@@ -2297,6 +2304,7 @@ class TestVoiceReception:
         receiver._decoders[ssrc] = mock_decoder
         return mock_decoder
 
+    @pytest.mark.skipif(not HAS_DAVEY, reason="davey not installed")
     def test_on_packet_dave_known_user_decrypt_ok(self):
         """Known SSRC + DAVE decrypt success → audio buffered."""
         dave = MagicMock()
@@ -2328,6 +2336,7 @@ class TestVoiceReception:
         assert 100 in receiver._buffers
         assert len(receiver._buffers[100]) > 0
 
+    @pytest.mark.skipif(not HAS_DAVEY, reason="davey not installed")
     def test_on_packet_dave_unencrypted_error_passthrough(self):
         """DAVE decrypt 'Unencrypted' error → use data as-is, don't drop."""
         dave = MagicMock()

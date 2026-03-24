@@ -8,10 +8,25 @@ end-to-end dispatch.  All external dependencies are mocked.
 import os
 import struct
 import subprocess
+import sys
 import wave
+from importlib.util import spec_from_loader
+from types import ModuleType
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+# Check for optional faster_whisper dependency
+try:
+    import faster_whisper
+    HAS_FASTER_WHISPER = True
+except ImportError:
+    HAS_FASTER_WHISPER = False
+    # Create a mock module with proper __spec__ for patching when the real one isn't available
+    mock_fw = ModuleType("faster_whisper")
+    mock_fw.__spec__ = spec_from_loader("faster_whisper", loader=None)
+    mock_fw.WhisperModel = MagicMock
+    sys.modules["faster_whisper"] = mock_fw
 
 
 # ============================================================================
@@ -404,6 +419,7 @@ class TestTranscribeLocalCommand:
 # _transcribe_local — additional tests
 # ============================================================================
 
+@pytest.mark.skipif(not HAS_FASTER_WHISPER, reason="faster_whisper not installed")
 class TestTranscribeLocalExtended:
     def test_model_reuse_on_second_call(self, tmp_path):
         """Second call with same model should NOT reload the model."""

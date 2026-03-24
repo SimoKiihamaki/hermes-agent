@@ -6,10 +6,18 @@ Verifies that:
 - Preflight compression proactively compresses oversized sessions before API calls
 """
 
+import sys
+from unittest.mock import MagicMock
+
+# Mock fire module if not available to allow collection
+if "fire" not in sys.modules:
+    try:
+        import fire
+    except ImportError:
+        sys.modules["fire"] = MagicMock()
+
 import pytest
 pytestmark = pytest.mark.skip(reason="Hangs in non-interactive environments")
-
-
 
 import uuid
 from types import SimpleNamespace

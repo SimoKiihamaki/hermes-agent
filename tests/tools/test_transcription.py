@@ -6,11 +6,26 @@ dispatch.  All external dependencies (faster_whisper, openai) are mocked.
 
 import json
 import os
+import sys
 import tempfile
+from importlib.util import spec_from_loader
 from pathlib import Path
+from types import ModuleType
 from unittest.mock import MagicMock, patch, mock_open
 
 import pytest
+
+# Check for optional faster_whisper dependency
+try:
+    import faster_whisper
+    HAS_FASTER_WHISPER = True
+except ImportError:
+    HAS_FASTER_WHISPER = False
+    # Create a mock module with proper __spec__ for patching when the real one isn't available
+    mock_fw = ModuleType("faster_whisper")
+    mock_fw.__spec__ = spec_from_loader("faster_whisper", loader=None)
+    mock_fw.WhisperModel = MagicMock
+    sys.modules["faster_whisper"] = mock_fw
 
 
 # ---------------------------------------------------------------------------
@@ -116,6 +131,7 @@ class TestValidateAudioFile:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(not HAS_FASTER_WHISPER, reason="faster_whisper not installed")
 class TestTranscribeLocal:
 
     def test_successful_transcription(self, tmp_path):

@@ -7,6 +7,9 @@ from unittest.mock import MagicMock, AsyncMock, patch
 
 import pytest
 
+# Skip entire module if acp is not installed
+pytest.importorskip("acp")
+
 import acp
 from acp.schema import (
     AgentCapabilities,

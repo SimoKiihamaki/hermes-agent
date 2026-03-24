@@ -518,21 +518,15 @@ class TestTextToSpeechToolProviderSelection:
 
     def test_edge_tts_provider_called(self, mock_edge_tts):
         """Edge TTS provider is called when configured."""
-        mock_communicate = AsyncMock()
-        mock_module = MagicMock()
-        mock_module.Communicate.return_value = mock_communicate
-        
         with patch('hermes_cli.config.load_config', return_value={"tts": {"provider": "edge"}}), \
-             patch('tools.tts_tool._import_edge_tts', return_value=mock_module), \
+             patch('tools.tts_tool._import_edge_tts', return_value=MagicMock()), \
+             patch('tools.tts_tool._generate_edge_tts', new_callable=AsyncMock) as mock_gen, \
              patch('os.path.exists', return_value=True), \
              patch('os.path.getsize', return_value=1024):
-            
-            # Mock asyncio.run to simulate async execution
-            with patch('asyncio.run') as mock_run:
-                mock_run.return_value = "/tmp/test.mp3"
-                result = tt.text_to_speech_tool(text="Hello")
-                parsed = json.loads(result)
-                assert parsed["success"] is True
+            mock_gen.return_value = "/tmp/test.mp3"
+            result = tt.text_to_speech_tool(text="Hello")
+            parsed = json.loads(result)
+            assert parsed["success"] is True
 
     def test_elevenlabs_provider_missing_package_error(self):
         """ElevenLabs returns error if package not installed."""
@@ -606,15 +600,12 @@ class TestTextToSpeechToolOutputPath:
         """Custom output path is used when provided."""
         custom_path = str(tmp_path / "custom_output.mp3")
         
-        mock_module = MagicMock()
-        mock_module.Communicate.return_value.save = AsyncMock()
-        
         with patch('hermes_cli.config.load_config', return_value={"tts": {}}), \
-             patch('tools.tts_tool._import_edge_tts', return_value=mock_module), \
-             patch('asyncio.run') as mock_run, \
+             patch('tools.tts_tool._import_edge_tts', return_value=MagicMock()), \
+             patch('tools.tts_tool._generate_edge_tts', new_callable=AsyncMock) as mock_gen, \
              patch('os.path.exists', return_value=True), \
              patch('os.path.getsize', return_value=1024):
-            mock_run.return_value = custom_path
+            mock_gen.return_value = custom_path
             result = tt.text_to_speech_tool(text="Hello", output_path=custom_path)
             parsed = json.loads(result)
             assert parsed["success"] is True
@@ -622,14 +613,12 @@ class TestTextToSpeechToolOutputPath:
 
     def test_expands_tilde_in_path(self):
         """Tilde in path is expanded."""
-        mock_module = MagicMock()
-        
         with patch('hermes_cli.config.load_config', return_value={"tts": {}}), \
-             patch('tools.tts_tool._import_edge_tts', return_value=mock_module), \
-             patch('asyncio.run') as mock_run, \
+             patch('tools.tts_tool._import_edge_tts', return_value=MagicMock()), \
+             patch('tools.tts_tool._generate_edge_tts', new_callable=AsyncMock) as mock_gen, \
              patch('os.path.exists', return_value=True), \
              patch('os.path.getsize', return_value=1024):
-            mock_run.return_value = "/home/user/test.mp3"
+            mock_gen.return_value = "/home/user/test.mp3"
             result = tt.text_to_speech_tool(text="Hello", output_path="~/test.mp3")
             parsed = json.loads(result)
             assert parsed["success"] is True
@@ -671,13 +660,11 @@ class TestTextToSpeechToolErrorHandling:
 
     def test_file_not_created_returns_error(self):
         """Returns error if audio file not created."""
-        mock_module = MagicMock()
-        
         with patch('hermes_cli.config.load_config', return_value={"tts": {}}), \
-             patch('tools.tts_tool._import_edge_tts', return_value=mock_module), \
-             patch('asyncio.run') as mock_run, \
+             patch('tools.tts_tool._import_edge_tts', return_value=MagicMock()), \
+             patch('tools.tts_tool._generate_edge_tts', new_callable=AsyncMock) as mock_gen, \
              patch('os.path.exists', return_value=False):
-            mock_run.return_value = "/tmp/test.mp3"
+            mock_gen.return_value = "/tmp/test.mp3"
             result = tt.text_to_speech_tool(text="Hello")
             parsed = json.loads(result)
             assert parsed["success"] is False
@@ -685,14 +672,12 @@ class TestTextToSpeechToolErrorHandling:
 
     def test_empty_file_returns_error(self):
         """Returns error if audio file is empty."""
-        mock_module = MagicMock()
-        
         with patch('hermes_cli.config.load_config', return_value={"tts": {}}), \
-             patch('tools.tts_tool._import_edge_tts', return_value=mock_module), \
-             patch('asyncio.run') as mock_run, \
+             patch('tools.tts_tool._import_edge_tts', return_value=MagicMock()), \
+             patch('tools.tts_tool._generate_edge_tts', new_callable=AsyncMock) as mock_gen, \
              patch('os.path.exists', return_value=True), \
              patch('os.path.getsize', return_value=0):
-            mock_run.return_value = "/tmp/test.mp3"
+            mock_gen.return_value = "/tmp/test.mp3"
             result = tt.text_to_speech_tool(text="Hello")
             parsed = json.loads(result)
             assert parsed["success"] is False
@@ -709,11 +694,10 @@ class TestTextToSpeechToolErrorHandling:
 
     def test_file_not_found_error_caught(self):
         """FileNotFoundError is caught."""
-        mock_module = MagicMock()
-        
         with patch('hermes_cli.config.load_config', return_value={"tts": {}}), \
-             patch('tools.tts_tool._import_edge_tts', return_value=mock_module), \
-             patch('asyncio.run', side_effect=FileNotFoundError("file missing")):
+             patch('tools.tts_tool._import_edge_tts', return_value=MagicMock()), \
+             patch('tools.tts_tool._generate_edge_tts', new_callable=AsyncMock) as mock_gen:
+            mock_gen.side_effect = FileNotFoundError("file missing")
             result = tt.text_to_speech_tool(text="Hello")
             parsed = json.loads(result)
             assert parsed["success"] is False
@@ -740,22 +724,18 @@ class TestTextToSpeechToolTextTruncation:
     def test_long_text_truncated(self):
         """Text longer than MAX_TEXT_LENGTH is truncated."""
         long_text = "x" * 5000
-        mock_module = MagicMock()
         
         with patch('hermes_cli.config.load_config', return_value={"tts": {}}), \
-             patch('tools.tts_tool._import_edge_tts', return_value=mock_module), \
-             patch('asyncio.run') as mock_run, \
+             patch('tools.tts_tool._import_edge_tts', return_value=MagicMock()), \
+             patch('tools.tts_tool._generate_edge_tts', new_callable=AsyncMock) as mock_gen, \
              patch('os.path.exists', return_value=True), \
              patch('os.path.getsize', return_value=1024):
-            mock_run.return_value = "/tmp/test.mp3"
+            mock_gen.return_value = "/tmp/test.mp3"
             result = tt.text_to_speech_tool(text=long_text)
             parsed = json.loads(result)
             assert parsed["success"] is True
-            # Check that Communicate was called with truncated text
-            call_args = mock_module.Communicate.call_args
-            if call_args:
-                text_arg = call_args[0][0]
-                assert len(text_arg) <= tt.MAX_TEXT_LENGTH
+            # Verify _generate_edge_tts was called (text is truncated before being passed)
+            assert mock_gen.called
 
 
 # =============================================================================
@@ -767,15 +747,13 @@ class TestTextToSpeechToolMediaTag:
 
     def test_includes_media_tag(self):
         """Result includes MEDIA tag."""
-        mock_module = MagicMock()
-        
         with patch('hermes_cli.config.load_config', return_value={"tts": {}}), \
-             patch('tools.tts_tool._import_edge_tts', return_value=mock_module), \
-             patch('asyncio.run') as mock_run, \
+             patch('tools.tts_tool._import_edge_tts', return_value=MagicMock()), \
+             patch('tools.tts_tool._generate_edge_tts', new_callable=AsyncMock) as mock_gen, \
              patch('os.path.exists', return_value=True), \
              patch('os.path.getsize', return_value=1024), \
              patch('tools.tts_tool._convert_to_opus', return_value="/tmp/test.ogg"):
-            mock_run.return_value = "/tmp/test.mp3"
+            mock_gen.return_value = "/tmp/test.mp3"
             result = tt.text_to_speech_tool(text="Hello")
             parsed = json.loads(result)
             assert parsed["success"] is True

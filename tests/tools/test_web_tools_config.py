@@ -9,8 +9,18 @@ Coverage:
 """
 
 import os
+import sys
 import pytest
 from unittest.mock import patch, MagicMock
+
+# Check for optional parallel dependency
+try:
+    import parallel
+    HAS_PARALLEL = True
+except ImportError:
+    HAS_PARALLEL = False
+    # Create a mock module for patching when the real one isn't available
+    sys.modules['parallel'] = MagicMock()
 
 
 class TestFirecrawlClientConfig:
@@ -239,6 +249,7 @@ class TestBackendSelection:
             assert _get_backend() == "parallel"
 
 
+@pytest.mark.skipif(not HAS_PARALLEL, reason="parallel-web not installed")
 class TestParallelClientConfig:
     """Test suite for Parallel client initialization."""
 

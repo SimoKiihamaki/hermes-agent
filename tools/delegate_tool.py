@@ -21,6 +21,7 @@ import logging
 logger = logging.getLogger(__name__)
 import os
 import time
+import asyncio
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
@@ -394,6 +395,94 @@ def _run_single_child(
             except (ValueError, UnboundLocalError) as e:
                 logger.debug("Could not remove child from active_children: %s", e)
 
+def _handle_autodev_delegation(
+    goal: Optional[str],
+    context: Optional[str],
+    parent_agent,
+) -> str:
+    """
+    Handle autodev task type using HierarchicalExecutor.
+    
+    This invokes the Manager→Coder→Reviewer flow instead of spawning
+    a child AIAgent. The role mapping is:
+      - Manager → plan (task decomposition)
+      - Coder → implement (code execution)
+      - Reviewer → review (code validation)
+    
+    Returns JSON result compatible with standard delegation.
+    """
+    import time
+    
+    if not goal or not goal.strip():
+        return json.dumps({"error": "autodev task type requires a 'goal' parameter."})
+    
+    start_time = time.monotonic()
+    
+    try:
+        # Import the bridge
+        from tools.autodev_bridge import HermesAutoDevBridge, AutoDevConfig, AUTODEV_AVAILABLE
+        
+        if not AUTODEV_AVAILABLE:
+            duration = round(time.monotonic() - start_time, 2)
+            return json.dumps({
+                "error": "AutoDev components not available. Ensure autodev is installed at ~/Projects/autodev",
+                "duration_seconds": duration,
+            })
+        
+        # Create bridge and execute
+        config = AutoDevConfig(
+            max_iterations=5,
+            num_coders=2,
+            num_reviewers=1,
+        )
+        
+        bridge = HermesAutoDevBridge(parent_agent, config)
+        
+        # Run async execution in sync context
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # Already in async context - run in thread
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(
+                        asyncio.run,
+                        bridge.execute(goal, context)
+                    )
+                    result = future.result(timeout=config.timeout_seconds)
+            else:
+                # Can use existing loop
+                result = loop.run_until_complete(bridge.execute(goal, context))
+        except RuntimeError:
+            # No loop - create new one
+            result = asyncio.run(bridge.execute(goal, context))
+        
+        # Format result
+        duration = round(time.monotonic() - start_time, 2)
+        result["duration_seconds"] = duration
+        
+        return json.dumps({
+            "results": [result],
+            "total_duration_seconds": duration,
+            "autodev_mode": True,
+        }, ensure_ascii=False)
+        
+    except ImportError as e:
+        duration = round(time.monotonic() - start_time, 2)
+        logger.error(f"Failed to import autodev_bridge: {e}")
+        return json.dumps({
+            "error": f"AutoDev bridge not available: {e}",
+            "duration_seconds": duration,
+        })
+    except Exception as e:
+        duration = round(time.monotonic() - start_time, 2)
+        logger.error(f"AutoDev delegation failed: {e}", exc_info=True)
+        return json.dumps({
+            "error": f"AutoDev execution failed: {e}",
+            "duration_seconds": duration,
+        })
+
+
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
@@ -401,6 +490,7 @@ def delegate_task(
     tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None,
     parent_agent=None,
+    task_type: Optional[str] = None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
@@ -408,6 +498,10 @@ def delegate_task(
     Supports two modes:
       - Single: provide goal (+ optional context, toolsets)
       - Batch:  provide tasks array [{goal, context, toolsets}, ...]
+
+    Supports task types:
+      - 'default': Standard subagent delegation (spawns child AIAgent)
+      - 'autodev': Hierarchical execution using Manager→Coder→Reviewer flow
 
     Returns JSON with results array, one entry per task.
     """
@@ -423,6 +517,10 @@ def delegate_task(
                 "Subagents cannot spawn further subagents."
             )
         })
+
+    # Handle autodev task type - hierarchical execution
+    if task_type == "autodev":
+        return _handle_autodev_delegation(goal, context, parent_agent)
 
     # Load config
     cfg = _load_config()
@@ -763,6 +861,15 @@ DELEGATE_TASK_SCHEMA = {
                     "Only set lower for simple tasks."
                 ),
             },
+            "task_type": {
+                "type": "string",
+                "enum": ["default", "autodev"],
+                "description": (
+                    "Task execution type. 'default' spawns child AIAgent with isolated context. "
+                    "'autodev' uses hierarchical Manager→Coder→Reviewer flow for complex development tasks. "
+                    "Use 'autodev' for tasks requiring planning, implementation, and review phases."
+                ),
+            },
         },
         "required": [],
     },
@@ -782,6 +889,7 @@ registry.register(
         toolsets=args.get("toolsets"),
         tasks=args.get("tasks"),
         max_iterations=args.get("max_iterations"),
+        task_type=args.get("task_type"),
         parent_agent=kw.get("parent_agent")),
     check_fn=check_delegate_requirements,
     emoji="🔀",

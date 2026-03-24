@@ -96,6 +96,18 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `TINKER_API_KEY` | RL training ([tinker-console.thinkingmachines.ai](https://tinker-console.thinkingmachines.ai/)) |
 | `WANDB_API_KEY` | RL training metrics ([wandb.ai](https://wandb.ai/)) |
 | `DAYTONA_API_KEY` | Daytona cloud sandboxes ([daytona.io](https://daytona.io/)) |
+| `BRAVE_API_KEY` | Brave Search API for AutoDev web search ([brave.com/search/api](https://brave.com/search/api/)) |
+| `DATABASE_URL` | PostgreSQL connection string for AutoDev database operations |
+
+## AutoDev Integration
+
+| Variable | Description |
+|----------|-------------|
+| `AUTODEV_ROOT` | AutoDev installation directory (default: `~/Projects/autodev`) |
+| `AUTODEV_MCP_CONFIG` | Path to MCP server configuration file (default: `$AUTODEV_ROOT/config/mcp_config.json`) |
+| `ANTHROPIC_API_KEY` | Anthropic API key for AutoDev's LLM operations ([console.anthropic.com](https://console.anthropic.com/)) |
+
+AutoDev also uses `GITHUB_TOKEN` (for GitHub MCP server) and `BRAVE_API_KEY` (for Brave Search MCP server) when those MCP servers are enabled in the configuration.
 
 ## Terminal Backend
 

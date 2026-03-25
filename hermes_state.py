@@ -127,6 +127,7 @@ class SessionDB:
         self._conn.execute("PRAGMA foreign_keys=ON")
 
         self._init_schema()
+        self._closed = False
 
     def _init_schema(self):
         """Create tables and FTS if they don't exist, run migrations."""
@@ -208,12 +209,37 @@ class SessionDB:
 
         self._conn.commit()
 
-    def close(self):
-        """Close the database connection."""
+    def close(self) -> None:
+        """Close the database connection. Safe to call multiple times."""
+        if self._closed:
+            return
         with self._lock:
             if self._conn:
-                self._conn.close()
-                self._conn = None
+                try:
+                    self._conn.close()
+                except Exception:
+                    pass
+            self._closed = True
+
+    def __enter__(self) -> "SessionDB":
+        """Context manager entry."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Context manager exit - ensure connection is closed."""
+        self.close()
+
+    def __del__(self) -> None:
+        """Destructor - warn if not properly closed."""
+        if not self._closed:
+            import warnings
+            warnings.warn(
+                f"SessionDB for {self.db_path} was not explicitly closed. "
+                "Use 'with SessionDB() as db:' or call db.close() explicitly.",
+                ResourceWarning,
+                stacklevel=2
+            )
+            self.close()
 
     # =========================================================================
     # Session lifecycle

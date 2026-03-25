@@ -398,7 +398,7 @@ def get_trace_collector() -> FileBasedTraceCollector:
     return _collector_instance
 
 
-def reset_trace_collector():
+def reset_trace_collector() -> None:
     """Reset the global trace collector (for testing)."""
     global _collector_instance
     _collector_instance = None

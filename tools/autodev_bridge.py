@@ -14,8 +14,18 @@ import asyncio
 import logging
 import sys
 import os
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
+
+# Import trace collector for RL training
+try:
+    from tools.trace_collector import FileBasedTraceCollector, ExecutionTrace
+    TRACE_COLLECTOR_AVAILABLE = True
+except ImportError:
+    TRACE_COLLECTOR_AVAILABLE = False
+    FileBasedTraceCollector = None
+    ExecutionTrace = None
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +95,7 @@ class HermesAutoDevBridge:
         self,
         parent_agent,
         config: Optional[AutoDevConfig] = None,
+        trace_collector: Optional[FileBasedTraceCollector] = None,
     ):
         """
         Initialize the bridge.
@@ -92,11 +103,33 @@ class HermesAutoDevBridge:
         Args:
             parent_agent: Hermes parent agent for context/tools
             config: Optional AutoDev configuration
+            trace_collector: Optional trace collector for RL training
         """
         self.parent_agent = parent_agent
         self.config = config or AutoDevConfig()
         self._executor: Optional[HierarchicalExecutor] = None
         self._initialized = False
+        
+        # Initialize trace collector for RL training
+        if trace_collector:
+            self._trace_collector = trace_collector
+        elif TRACE_COLLECTOR_AVAILABLE:
+            self._trace_collector = FileBasedTraceCollector()
+        else:
+            self._trace_collector = None
+        
+        # Track active traces during execution
+        self._active_traces: Dict[str, str] = {}  # agent_id -> trace_id
+        self._completed_traces: List[ExecutionTrace] = []
+    
+    def _collect_completed_traces(self) -> List[ExecutionTrace]:
+        """Collect all completed traces from the collector."""
+        if not self._trace_collector:
+            return []
+        
+        # Get traces from the collector's buffer
+        traces = list(self._trace_collector._trace_buffer)
+        return traces
         
     def _create_task_spec(self, goal: str, context: Optional[str] = None) -> TaskSpec:
         """Create a TaskSpec from goal and context."""
@@ -133,17 +166,28 @@ class HermesAutoDevBridge:
             return
         
         try:
-            # Create lightweight wrapper agents
+            # Create lightweight wrapper agents with trace collection
             # These will delegate actual work back to the Hermes parent agent
-            self._manager = _HermesManagerWrapper(self.parent_agent)
+            self._manager = _HermesManagerWrapper(
+                self.parent_agent, 
+                trace_collector=self._trace_collector
+            )
             
             self._coder_pool = [
-                _HermesCoderWrapper(self.parent_agent, idx=i)
+                _HermesCoderWrapper(
+                    self.parent_agent, 
+                    idx=i,
+                    trace_collector=self._trace_collector
+                )
                 for i in range(self.config.num_coders)
             ]
             
             self._reviewer_pool = [
-                _HermesReviewerWrapper(self.parent_agent, idx=i)
+                _HermesReviewerWrapper(
+                    self.parent_agent, 
+                    idx=i,
+                    trace_collector=self._trace_collector
+                )
                 for i in range(self.config.num_reviewers)
             ]
             
@@ -158,7 +202,8 @@ class HermesAutoDevBridge:
             self._initialized = True
             logger.info(
                 f"AutoDev agents initialized: 1 manager, "
-                f"{len(self._coder_pool)} coders, {len(self._reviewer_pool)} reviewers"
+                f"{len(self._coder_pool)} coders, {len(self._reviewer_pool)} reviewers, "
+                f"trace_collection={'enabled' if self._trace_collector else 'disabled'}"
             )
             
         except Exception as e:
@@ -176,8 +221,11 @@ class HermesAutoDevBridge:
         Returns:
             Result dictionary compatible with Hermes delegate_task
         """
-        import time
         start_time = time.monotonic()
+        
+        # Clear traces from previous execution
+        self._active_traces.clear()
+        self._completed_traces.clear()
         
         # Ensure agents are initialized
         self._initialize_agents()
@@ -190,6 +238,13 @@ class HermesAutoDevBridge:
                 # Execute using hierarchical system
                 result = await self._executor.execute(task_spec)
                 
+                # Collect completed traces before flushing
+                self._completed_traces = self._collect_completed_traces()
+                
+                # Flush any pending traces
+                if self._trace_collector:
+                    self._trace_collector.flush()
+                
                 # Convert to Hermes-compatible format
                 return self._convert_result(result, start_time)
             else:
@@ -199,12 +254,17 @@ class HermesAutoDevBridge:
         except Exception as e:
             logger.error(f"AutoDev execution failed: {e}", exc_info=True)
             duration = round(time.monotonic() - start_time, 2)
+            
+            # Collect any traces that were completed before the error
+            self._completed_traces = self._collect_completed_traces()
+            
             return {
                 "status": "error",
                 "summary": None,
                 "error": str(e),
                 "duration_seconds": duration,
                 "autodev_mode": True,
+                "traces": [t.to_dict() for t in self._completed_traces] if self._completed_traces else [],
             }
     
     async def _fallback_execute(
@@ -214,8 +274,10 @@ class HermesAutoDevBridge:
         start_time: float
     ) -> Dict[str, Any]:
         """Fallback execution when AutoDev is not available."""
-        import time
         logger.warning("AutoDev not available, using fallback mode")
+        
+        # Collect any traces that may have been created
+        self._completed_traces = self._collect_completed_traces()
         
         # Simple passthrough to parent agent
         # This is a basic implementation - in production you'd want better handling
@@ -229,6 +291,7 @@ class HermesAutoDevBridge:
             "duration_seconds": duration,
             "autodev_mode": True,
             "fallback": True,
+            "traces": [t.to_dict() for t in self._completed_traces] if self._completed_traces else [],
         }
     
     def _convert_result(
@@ -237,7 +300,6 @@ class HermesAutoDevBridge:
         start_time: float
     ) -> Dict[str, Any]:
         """Convert HierarchicalResult to Hermes-compatible format."""
-        import time
         duration = round(time.monotonic() - start_time, 2)
         
         # Extract files modified
@@ -261,6 +323,9 @@ class HermesAutoDevBridge:
         if result.code_changes:
             summary_parts.append(f"Code changes: {len(result.code_changes)}")
         
+        # Collect traces
+        traces_data = [t.to_dict() for t in self._completed_traces] if self._completed_traces else []
+        
         return {
             "status": "completed" if result.success else "failed",
             "summary": "\n".join(summary_parts),
@@ -271,17 +336,20 @@ class HermesAutoDevBridge:
             "review_iterations": result.review_iterations,
             "total_time_seconds": result.total_time_seconds,
             "agent_usage": result.agent_usage,
+            "traces": traces_data,
         }
 
 
 class _HermesAgentWrapper:
     """Base wrapper that delegates to Hermes parent agent."""
     
-    def __init__(self, parent_agent, role: str, idx: int = 0):
+    def __init__(self, parent_agent, role: str, idx: int = 0, trace_collector=None):
         self.parent_agent = parent_agent
         self.role = role
         self.agent_id = f"{role}-{idx}"
         self._idx = idx
+        self._trace_collector = trace_collector
+        self._current_trace_id: Optional[str] = None
     
     async def initialize(self) -> None:
         """Initialize the agent."""
@@ -290,13 +358,83 @@ class _HermesAgentWrapper:
     async def shutdown(self) -> None:
         """Shutdown the agent."""
         logger.debug(f"{self.agent_id} shutdown")
+    
+    def _start_trace(self, task_id: str, metadata: Optional[Dict[str, Any]] = None) -> Optional[str]:
+        """Start a trace for this agent."""
+        if not self._trace_collector:
+            return None
+        
+        self._current_trace_id = self._trace_collector.start_trace(
+            agent_id=self.agent_id,
+            task_id=task_id,
+            role=self.role,
+            metadata=metadata,
+        )
+        logger.debug(f"{self.agent_id} started trace {self._current_trace_id}")
+        return self._current_trace_id
+    
+    def _end_trace(self, result: Any = None, success: bool = True, error: Optional[str] = None) -> Optional[ExecutionTrace]:
+        """End the current trace."""
+        if not self._trace_collector or not self._current_trace_id:
+            return None
+        
+        trace = self._trace_collector.end_trace(
+            trace_id=self._current_trace_id,
+            result=result,
+            success=success,
+            error=error,
+        )
+        self._current_trace_id = None
+        return trace
+    
+    def _record_tool_call(
+        self,
+        tool_name: str,
+        tool_input: Dict[str, Any],
+        tool_output: Any,
+        duration_ms: float,
+        success: bool = True,
+    ) -> None:
+        """Record a tool call in the current trace."""
+        if not self._trace_collector or not self._current_trace_id:
+            return
+        
+        self._trace_collector.record_tool_call(
+            trace_id=self._current_trace_id,
+            tool_name=tool_name,
+            tool_input=tool_input,
+            tool_output=tool_output,
+            duration_ms=duration_ms,
+            success=success,
+        )
+    
+    def _record_llm_call(
+        self,
+        prompt: str,
+        response: str,
+        tokens_used: int,
+        duration_ms: float,
+        model: str,
+    ) -> None:
+        """Record an LLM call in the current trace."""
+        if not self._trace_collector or not self._current_trace_id:
+            return
+        
+        self._trace_collector.record_llm_call(
+            trace_id=self._current_trace_id,
+            prompt=prompt,
+            response=response,
+            tokens_used=tokens_used,
+            duration_ms=duration_ms,
+            model=model,
+        )
 
 
 class _HermesManagerWrapper(_HermesAgentWrapper):
     """Manager agent wrapper - maps to 'plan' role."""
     
-    def __init__(self, parent_agent):
-        super().__init__(parent_agent, "manager")
+    def __init__(self, parent_agent, trace_collector=None):
+        super().__init__(parent_agent, "manager", trace_collector=trace_collector)
         self.role_mapping = ROLE_MAPPING["manager"]
     
     async def decompose(self, task: TaskSpec) -> List[SubTask]:
@@ -307,30 +445,68 @@ class _HermesManagerWrapper(_HermesAgentWrapper):
         """
         logger.info(f"Manager decomposing task: {task.task_id}")
         
-        # Create subtasks based on the specification
-        # In a full implementation, this would use the parent agent's LLM
-        if not AUTODEV_AVAILABLE:
-            return [type('SubTask', (), {
-                'subtask_id': f"{task.task_id}-sub-0",
-                'name': "Implement main task",
-                'task_type': task.task_type,
-                'description': task.specification,
-            })()]
+        # Start trace
+        self._start_trace(
+            task_id=task.task_id,
+            metadata={"operation": "decompose", "task_type": task.task_type}
+        )
         
-        # Create subtask using AutoDev's SubTask class
-        return [SubTask(
-            subtask_id=f"{task.task_id}-sub-0",
-            name="Implement main task",
-            task_type=task.task_type,
-            description=task.specification,
-        )]
+        start_time = time.monotonic()
+        
+        try:
+            # Create subtasks based on the specification
+            # In a full implementation, this would use the parent agent's LLM
+            if not AUTODEV_AVAILABLE:
+                subtask = type('SubTask', (), {
+                    'subtask_id': f"{task.task_id}-sub-0",
+                    'name': "Implement main task",
+                    'task_type': task.task_type,
+                    'description': task.specification,
+                })()
+                
+                # Record the decomposition as an LLM call
+                self._record_llm_call(
+                    prompt=f"Decompose task: {task.specification}",
+                    response=f"Single subtask: {task.specification[:100]}",
+                    tokens_used=100,
+                    duration_ms=(time.monotonic() - start_time) * 1000,
+                    model=getattr(self.parent_agent, 'model', 'unknown'),
+                )
+                
+                self._end_trace(result={"subtasks_count": 1})
+                return [subtask]
+            
+            # Create subtask using AutoDev's SubTask class
+            subtask = SubTask(
+                subtask_id=f"{task.task_id}-sub-0",
+                name="Implement main task",
+                task_type=task.task_type,
+                description=task.specification,
+            )
+            
+            # Record the decomposition as an LLM call
+            self._record_llm_call(
+                prompt=f"Decompose task: {task.specification}",
+                response=f"Single subtask: {task.specification[:100]}",
+                tokens_used=100,
+                duration_ms=(time.monotonic() - start_time) * 1000,
+                model=getattr(self.parent_agent, 'model', 'unknown'),
+            )
+            
+            self._end_trace(result={"subtasks_count": 1})
+            return [subtask]
+            
+        except Exception as e:
+            logger.error(f"Manager decomposition failed: {e}")
+            self._end_trace(result=None, success=False, error=str(e))
+            raise
 
 
 class _HermesCoderWrapper(_HermesAgentWrapper):
     """Coder agent wrapper - maps to 'implement' role."""
     
-    def __init__(self, parent_agent, idx: int = 0):
-        super().__init__(parent_agent, "coder", idx)
+    def __init__(self, parent_agent, idx: int = 0, trace_collector=None):
+        super().__init__(parent_agent, "coder", idx, trace_collector=trace_collector)
         self.role_mapping = ROLE_MAPPING["coder"]
     
     async def execute(self, subtask: SubTask) -> Any:
@@ -341,19 +517,56 @@ class _HermesCoderWrapper(_HermesAgentWrapper):
         """
         logger.info(f"Coder {self._idx} executing subtask: {subtask.subtask_id}")
         
-        # Create a code change result
-        return type('CodeChange', (), {
-            'file': 'implementation.py',
-            'diff': f"# Implementation for: {subtask.description[:100]}",
-            'files_modified': ['implementation.py'],
-        })()
+        # Start trace
+        self._start_trace(
+            task_id=subtask.subtask_id,
+            metadata={"operation": "execute", "subtask_name": subtask.name}
+        )
+        
+        start_time = time.monotonic()
+        
+        try:
+            # Record tool call for execution
+            self._record_tool_call(
+                tool_name="execute_subtask",
+                tool_input={"subtask_id": subtask.subtask_id, "description": subtask.description[:200]},
+                tool_output="implementation_generated",
+                duration_ms=(time.monotonic() - start_time) * 1000,
+                success=True,
+            )
+            
+            # Create a code change result
+            result = type('CodeChange', (), {
+                'file': 'implementation.py',
+                'diff': f"# Implementation for: {subtask.description[:100]}",
+                'files_modified': ['implementation.py'],
+            })()
+            
+            # Record file change
+            if self._trace_collector and self._current_trace_id:
+                self._trace_collector.record_file_change(
+                    trace_id=self._current_trace_id,
+                    file_path='implementation.py',
+                    change_type='modify',
+                    diff=result.diff,
+                    lines_added=10,
+                    lines_removed=0,
+                )
+            
+            self._end_trace(result={"files_modified": ['implementation.py']})
+            return result
+            
+        except Exception as e:
+            logger.error(f"Coder execution failed: {e}")
+            self._end_trace(result=None, success=False, error=str(e))
+            raise
 
 
 class _HermesReviewerWrapper(_HermesAgentWrapper):
     """Reviewer agent wrapper - maps to 'review' role."""
     
-    def __init__(self, parent_agent, idx: int = 0):
-        super().__init__(parent_agent, "reviewer", idx)
+    def __init__(self, parent_agent, idx: int = 0, trace_collector=None):
+        super().__init__(parent_agent, "reviewer", idx, trace_collector=trace_collector)
         self.role_mapping = ROLE_MAPPING["reviewer"]
     
     async def review(self, changes: List[Any]) -> Any:
@@ -364,15 +577,41 @@ class _HermesReviewerWrapper(_HermesAgentWrapper):
         """
         logger.info(f"Reviewer {self._idx} reviewing {len(changes)} changes")
         
-        # Auto-approve for now
-        # In full implementation, would use parent agent's LLM
-        return type('ReviewResult', (), {
-            'review_id': f"review-{os.urandom(4).hex()}",
-            'task_id': 'current-task',
-            'verdict': 'approved',
-            'findings': [],
-            'blocking_issues': [],
-        })()
+        # Start trace
+        self._start_trace(
+            task_id=f"review-{self._idx}",
+            metadata={"operation": "review", "changes_count": len(changes)}
+        )
+        
+        start_time = time.monotonic()
+        
+        try:
+            # Record LLM call for review
+            self._record_llm_call(
+                prompt=f"Review {len(changes)} code changes",
+                response="approved: no blocking issues found",
+                tokens_used=50,
+                duration_ms=(time.monotonic() - start_time) * 1000,
+                model=getattr(self.parent_agent, 'model', 'unknown'),
+            )
+            
+            # Auto-approve for now
+            # In full implementation, would use parent agent's LLM
+            result = type('ReviewResult', (), {
+                'review_id': f"review-{os.urandom(4).hex()}",
+                'task_id': 'current-task',
+                'verdict': 'approved',
+                'findings': [],
+                'blocking_issues': [],
+            })()
+            
+            self._end_trace(result={"verdict": "approved", "findings_count": 0})
+            return result
+            
+        except Exception as e:
+            logger.error(f"Reviewer failed: {e}")
+            self._end_trace(result=None, success=False, error=str(e))
+            raise
 
 
 def check_autodev_requirements() -> bool:

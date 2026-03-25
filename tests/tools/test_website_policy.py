@@ -258,6 +258,8 @@ def test_check_website_access_uses_dynamic_hermes_home(monkeypatch, tmp_path):
     )
 
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    from tools import website_policy
+    website_policy.invalidate_cache()
 
     blocked = check_website_access("https://dynamic.example/path")
 

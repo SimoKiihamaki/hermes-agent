@@ -28,6 +28,7 @@ Usage:
     )
 """
 
+import asyncio
 import base64
 import json
 import logging
@@ -97,6 +98,7 @@ def _validate_image_url(url: str) -> bool:
         return False
 
     return True
+
 
 
 def _detect_image_mime_type(image_path: Path) -> Optional[str]:

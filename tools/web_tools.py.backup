@@ -10,6 +10,13 @@ Available tools:
 - web_extract_tool: Extract content from specific web pages
 - web_crawl_tool: Crawl websites with specific instructions (Firecrawl only)
 
+Page Storage tools (persistent storage for scraped pages):
+- web_page_search_tool: Full-text search over saved pages
+- web_page_list_tool: List all saved pages with optional filtering
+- web_page_get_tool: Retrieve a specific saved page by URL or ID
+- web_page_delete_tool: Delete a page from storage
+- web_page_stats_tool: Get storage statistics
+
 Backend compatibility:
 - Firecrawl: https://docs.firecrawl.dev/introduction (search, extract, crawl)
 - Parallel: https://docs.parallel.ai (search, extract)
@@ -18,6 +25,12 @@ LLM Processing:
 - Uses OpenRouter API with Gemini 3 Flash Preview for intelligent content extraction
 - Extracts key excerpts and creates markdown summaries to reduce token usage
 
+Page Storage:
+- SQLite database stored at ~/.hermes/data/web_pages.db
+- Full-text search using SQLite FTS5
+- Automatic storage of pages extracted via web_extract_tool and web_crawl_tool
+- Set WEB_PAGES_DB_PATH env var for custom storage location
+
 Debug Mode:
 - Set WEB_TOOLS_DEBUG=true to enable detailed logging
 - Creates web_tools_debug_UUID.json in ./logs directory
@@ -25,6 +38,7 @@ Debug Mode:
 
 Usage:
     from web_tools import web_search_tool, web_extract_tool, web_crawl_tool
+    from web_tools import web_page_search_tool, web_page_list_tool
     
     # Search the web
     results = web_search_tool("Python machine learning libraries", limit=3)
@@ -34,21 +48,533 @@ Usage:
     
     # Crawl a website
     crawl_data = web_crawl_tool("example.com", "Find contact information")
+    
+    # Search saved pages
+    saved = web_page_search_tool("machine learning")
+    
+    # List saved pages
+    pages = web_page_list_tool(limit=10)
+"""
+
+# ─── Page Storage System ─────────────────────────────────────────────────────
+"""
+Persistent storage for scraped/extracted web pages with search capabilities.
+
+Features:
+- SQLite-based storage for efficient full-text search
+- Automatic page storage from web_extract and web_crawl operations
+- Search over saved page content
+- List and manage saved pages
 """
 
 import json
-import logging
 import os
+import sqlite3
+import hashlib
+import threading
+from pathlib import Path
+from datetime import datetime, timezone
+from contextlib import contextmanager
+from typing import Any, Dict, Generator, List, Optional
+
+# Storage directory - use ~/.hermes/data for persistence
+_STORAGE_DIR = Path.home() / ".hermes" / "data"
+_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+_PAGES_DB = _STORAGE_DIR / "web_pages.db"
+
+# Thread-local storage for database connections
+_local = threading.local()
+
+
+def _get_db_path() -> Path:
+    """Get the database path, checking for custom location via env var."""
+    custom_path = os.getenv("WEB_PAGES_DB_PATH", "").strip()
+    if custom_path:
+        return Path(custom_path)
+    return _PAGES_DB
+
+
+@contextmanager
+def _get_db_connection() -> Generator[sqlite3.Connection, None, None]:
+    """Get a thread-local SQLite connection with proper configuration."""
+    if not hasattr(_local, 'connection') or _local.connection is None:
+        db_path = _get_db_path()
+        _local.connection = sqlite3.connect(str(db_path), check_same_thread=False)
+        _local.connection.row_factory = sqlite3.Row
+        # Enable FTS5 for full-text search
+        _local.connection.execute("PRAGMA journal_mode=WAL")
+        _local.connection.execute("PRAGMA synchronous=NORMAL")
+        _init_db(_local.connection)
+    try:
+        yield _local.connection
+    except Exception:
+        if _local.connection:
+            _local.connection.rollback()
+        raise
+
+
+def _init_db(conn: sqlite3.Connection) -> None:
+    """Initialize the database schema with FTS support."""
+    # Main pages table
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS pages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            url TEXT NOT NULL UNIQUE,
+            url_hash TEXT NOT NULL,
+            title TEXT,
+            content TEXT,
+            raw_content TEXT,
+            metadata TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            source_tool TEXT,
+            content_length INTEGER DEFAULT 0
+        )
+    """)
+    
+    # Full-text search virtual table
+    conn.execute("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS pages_fts USING fts5(
+            url,
+            title,
+            content,
+            content='pages',
+            content_rowid='id'
+        )
+    """)
+    
+    # Triggers to keep FTS in sync
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS pages_ai AFTER INSERT ON pages BEGIN
+            INSERT INTO pages_fts(rowid, url, title, content)
+            VALUES (new.id, new.url, new.title, new.content);
+        END
+    """)
+    
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS pages_ad AFTER DELETE ON pages BEGIN
+            INSERT INTO pages_fts(pages_fts, rowid, url, title, content)
+            VALUES('delete', old.id, old.url, old.title, old.content);
+        END
+    """)
+    
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS pages_au AFTER UPDATE ON pages BEGIN
+            INSERT INTO pages_fts(pages_fts, rowid, url, title, content)
+            VALUES('delete', old.id, old.url, old.title, old.content);
+            INSERT INTO pages_fts(rowid, url, title, content)
+            VALUES (new.id, new.url, new.title, new.content);
+        END
+    """)
+    
+    conn.commit()
+
+
+def _hash_url(url: str) -> str:
+    """Create a hash of the URL for quick lookups."""
+    return hashlib.sha256(url.encode()).hexdigest()[:16]
+
+
+def store_page(
+    url: str,
+    title: str = "",
+    content: str = "",
+    raw_content: str = "",
+    metadata: dict = None,
+    source_tool: str = "unknown"
+) -> dict:
+    """
+    Store a web page in persistent storage.
+    
+    Args:
+        url: The page URL (unique identifier)
+        title: Page title
+        content: Processed/summarized content
+        raw_content: Original content
+        metadata: Additional metadata dict
+        source_tool: Tool that extracted this page (web_extract, web_crawl)
+    
+    Returns:
+        dict with success status and page id
+    """
+    if not url:
+        return {"success": False, "error": "URL is required"}
+    
+    try:
+        now = datetime.now(timezone.utc).isoformat()
+        url_hash = _hash_url(url)
+        metadata_json = json.dumps(metadata or {}, ensure_ascii=False)
+        content_len = len(content) if content else 0
+        
+        with _get_db_connection() as conn:
+            cursor = conn.execute("""
+                INSERT INTO pages (url, url_hash, title, content, raw_content, metadata, 
+                                   created_at, updated_at, source_tool, content_length)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(url) DO UPDATE SET
+                    title = excluded.title,
+                    content = excluded.content,
+                    raw_content = excluded.raw_content,
+                    metadata = excluded.metadata,
+                    updated_at = excluded.updated_at,
+                    source_tool = excluded.source_tool,
+                    content_length = excluded.content_length
+            """, (url, url_hash, title, content, raw_content, metadata_json,
+                  now, now, source_tool, content_len))
+            
+            conn.commit()
+            page_id = cursor.lastrowid
+            
+            logger.info("Stored page: %s (id=%d, %d chars)", url, page_id, content_len)
+            
+            return {
+                "success": True,
+                "page_id": page_id,
+                "url": url,
+                "content_length": content_len,
+                "stored_at": now
+            }
+            
+    except Exception as e:
+        logger.error("Failed to store page %s: %s", url, e)
+        return {"success": False, "error": str(e)}
+
+
+def store_pages_from_results(results: List[Dict[str, Any]], source_tool: str = "unknown") -> List[Dict[str, Any]]:
+    """
+    Store multiple pages from web_extract or web_crawl results.
+    
+    Args:
+        results: List of result dicts with url, title, content, etc.
+        source_tool: Tool that extracted these pages
+    
+    Returns:
+        List of storage results
+    """
+    stored = []
+    for result in results:
+        if result.get("error") or result.get("blocked_by_policy"):
+            continue  # Skip failed extractions
+        
+        store_result = store_page(
+            url=result.get("url", ""),
+            title=result.get("title", ""),
+            content=result.get("content", ""),
+            raw_content=result.get("raw_content", ""),
+            metadata=result.get("metadata"),
+            source_tool=source_tool
+        )
+        stored.append(store_result)
+    
+    return stored
+
+
+def search_pages(query: str, limit: int = 10, include_content: bool = True) -> str:
+    """
+    Search over saved web pages using full-text search.
+    
+    Args:
+        query: Search query (supports SQLite FTS5 syntax)
+        limit: Maximum number of results
+        include_content: Whether to include full content in results
+    
+    Returns:
+        JSON string with search results
+    """
+    if not query or not query.strip():
+        return json.dumps({"error": "Search query is required", "results": []})
+    
+    try:
+        # Escape special FTS characters and build query
+        search_query = query.strip().replace('"', '""')
+        
+        with _get_db_connection() as conn:
+            # Use FTS5 for full-text search with ranking
+            if include_content:
+                columns = "p.id, p.url, p.title, p.content, p.created_at, p.updated_at, p.source_tool, p.content_length"
+            else:
+                columns = "p.id, p.url, p.title, p.created_at, p.updated_at, p.source_tool, p.content_length"
+            
+            cursor = conn.execute(f"""
+                SELECT {columns}, pages_fts.rank
+                FROM pages p
+                JOIN pages_fts ON p.id = pages_fts.rowid
+                WHERE pages_fts MATCH ?
+                ORDER BY pages_fts.rank
+                LIMIT ?
+            """, (search_query, limit))
+            
+            results = []
+            for row in cursor.fetchall():
+                result = {
+                    "id": row["id"],
+                    "url": row["url"],
+                    "title": row["title"],
+                    "created_at": row["created_at"],
+                    "updated_at": row["updated_at"],
+                    "source_tool": row["source_tool"],
+                    "content_length": row["content_length"],
+                    "relevance_score": -row["rank"] if row["rank"] else 0
+                }
+                if include_content:
+                    result["content"] = row["content"]
+                results.append(result)
+            
+            return json.dumps({
+                "success": True,
+                "query": query,
+                "results_count": len(results),
+                "results": results
+            }, indent=2, ensure_ascii=False)
+            
+    except Exception as e:
+        logger.error("Search failed: %s", e)
+        return json.dumps({"error": f"Search failed: {str(e)}", "results": []})
+
+
+def list_pages(
+    limit: int = 50,
+    offset: int = 0,
+    source_tool: str = None,
+    min_length: int = None,
+    sort_by: str = "updated_at"
+) -> str:
+    """
+    List saved web pages with optional filtering.
+    
+    Args:
+        limit: Maximum number of results (default 50)
+        offset: Offset for pagination
+        source_tool: Filter by source tool (web_extract, web_crawl)
+        min_length: Minimum content length filter
+        sort_by: Sort field (updated_at, created_at, content_length, title)
+    
+    Returns:
+        JSON string with page list
+    """
+    try:
+        valid_sort_fields = {"updated_at", "created_at", "content_length", "title", "url"}
+        if sort_by not in valid_sort_fields:
+            sort_by = "updated_at"
+        
+        with _get_db_connection() as conn:
+            # Build query with filters
+            sql = """
+                SELECT id, url, title, created_at, updated_at, source_tool, content_length
+                FROM pages
+            """
+            params = []
+            conditions = []
+            
+            if source_tool:
+                conditions.append("source_tool = ?")
+                params.append(source_tool)
+            
+            if min_length is not None:
+                conditions.append("content_length >= ?")
+                params.append(min_length)
+            
+            if conditions:
+                sql += " WHERE " + " AND ".join(conditions)
+            
+            sql += f" ORDER BY {sort_by} DESC LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+            
+            cursor = conn.execute(sql, params)
+            
+            # Get total count for pagination
+            count_sql = "SELECT COUNT(*) as total FROM pages"
+            if conditions:
+                count_sql += " WHERE " + " AND ".join(conditions[:-2] if not (limit or offset) else conditions)
+            count_params = params[:-2] if params else []
+            total = conn.execute(count_sql, count_params).fetchone()["total"]
+            
+            pages = []
+            for row in cursor.fetchall():
+                pages.append({
+                    "id": row["id"],
+                    "url": row["url"],
+                    "title": row["title"],
+                    "created_at": row["created_at"],
+                    "updated_at": row["updated_at"],
+                    "source_tool": row["source_tool"],
+                    "content_length": row["content_length"]
+                })
+            
+            return json.dumps({
+                "success": True,
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+                "pages_count": len(pages),
+                "pages": pages
+            }, indent=2, ensure_ascii=False)
+            
+    except Exception as e:
+        logger.error("List pages failed: %s", e)
+        return json.dumps({"error": f"Failed to list pages: {str(e)}", "pages": []})
+
+
+def get_page(url: str = None, page_id: int = None) -> str:
+    """
+    Retrieve a specific page by URL or ID.
+    
+    Args:
+        url: Page URL
+        page_id: Page ID
+    
+    Returns:
+        JSON string with page data
+    """
+    if not url and not page_id:
+        return json.dumps({"error": "Either url or page_id is required"})
+    
+    try:
+        with _get_db_connection() as conn:
+            if page_id:
+                cursor = conn.execute("""
+                    SELECT id, url, title, content, raw_content, metadata, 
+                           created_at, updated_at, source_tool, content_length
+                    FROM pages WHERE id = ?
+                """, (page_id,))
+            else:
+                cursor = conn.execute("""
+                    SELECT id, url, title, content, raw_content, metadata,
+                           created_at, updated_at, source_tool, content_length
+                    FROM pages WHERE url = ?
+                """, (url,))
+            
+            row = cursor.fetchone()
+            if not row:
+                return json.dumps({"error": "Page not found", "success": False})
+            
+            return json.dumps({
+                "success": True,
+                "page": {
+                    "id": row["id"],
+                    "url": row["url"],
+                    "title": row["title"],
+                    "content": row["content"],
+                    "raw_content": row["raw_content"],
+                    "metadata": json.loads(row["metadata"]) if row["metadata"] else {},
+                    "created_at": row["created_at"],
+                    "updated_at": row["updated_at"],
+                    "source_tool": row["source_tool"],
+                    "content_length": row["content_length"]
+                }
+            }, indent=2, ensure_ascii=False)
+            
+    except Exception as e:
+        logger.error("Get page failed: %s", e)
+        return json.dumps({"error": f"Failed to get page: {str(e)}"})
+
+
+def delete_page(url: str = None, page_id: int = None) -> str:
+    """
+    Delete a page from storage.
+    
+    Args:
+        url: Page URL
+        page_id: Page ID
+    
+    Returns:
+        JSON string with result
+    """
+    if not url and not page_id:
+        return json.dumps({"error": "Either url or page_id is required"})
+    
+    try:
+        with _get_db_connection() as conn:
+            if page_id:
+                cursor = conn.execute("DELETE FROM pages WHERE id = ?", (page_id,))
+            else:
+                cursor = conn.execute("DELETE FROM pages WHERE url = ?", (url,))
+            
+            conn.commit()
+            
+            if cursor.rowcount == 0:
+                return json.dumps({"error": "Page not found", "success": False})
+            
+            return json.dumps({
+                "success": True,
+                "deleted": cursor.rowcount,
+                "url": url,
+                "page_id": page_id
+            })
+            
+    except Exception as e:
+        logger.error("Delete page failed: %s", e)
+        return json.dumps({"error": f"Failed to delete page: {str(e)}"})
+
+
+def get_storage_stats() -> dict:
+    """Get statistics about the page storage."""
+    try:
+        with _get_db_connection() as conn:
+            stats = conn.execute("""
+                SELECT 
+                    COUNT(*) as total_pages,
+                    SUM(content_length) as total_bytes,
+                    AVG(content_length) as avg_content_length,
+                    MAX(updated_at) as last_updated
+                FROM pages
+            """).fetchone()
+            
+            by_tool = conn.execute("""
+                SELECT source_tool, COUNT(*) as count
+                FROM pages
+                GROUP BY source_tool
+            """).fetchall()
+            
+            return {
+                "success": True,
+                "total_pages": stats["total_pages"] or 0,
+                "total_bytes": stats["total_bytes"] or 0,
+                "total_size_mb": round((stats["total_bytes"] or 0) / 1024 / 1024, 2),
+                "avg_content_length": round(stats["avg_content_length"] or 0, 0),
+                "last_updated": stats["last_updated"],
+                "by_source_tool": {row["source_tool"]: row["count"] for row in by_tool},
+                "storage_path": str(_get_db_path())
+            }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+# Public tool functions (wrappers for registry)
+def web_page_search_tool(query: str, limit: int = 10) -> str:
+    """Search over saved web pages using full-text search."""
+    return search_pages(query, limit=limit, include_content=True)
+
+
+def web_page_list_tool(limit: int = 50, offset: int = 0, source: str = None) -> str:
+    """List saved web pages with optional filtering."""
+    return list_pages(limit=limit, offset=offset, source_tool=source)
+
+
+def web_page_get_tool(url: str = None, page_id: int = None) -> str:
+    """Retrieve a specific saved page by URL or ID."""
+    return get_page(url=url, page_id=page_id)
+
+
+def web_page_delete_tool(url: str = None, page_id: int = None) -> str:
+    """Delete a page from storage."""
+    return delete_page(url=url, page_id=page_id)
+
+
+def web_page_stats_tool() -> str:
+    """Get statistics about saved pages."""
+    return json.dumps(get_storage_stats(), indent=2)
+
+
+import logging
 import re
 import asyncio
 from typing import List, Dict, Any, Optional
 import httpx
 from firecrawl import Firecrawl
-from agent.auxiliary_client import async_call_llm, extract_content_or_reasoning
+from agent.auxiliary_client import async_call_llm
 from tools.debug_helpers import DebugSession
-from tools.url_safety import is_safe_url
 from tools.website_policy import check_website_access
-from tools.url_safety import is_safe_url
 
 logger = logging.getLogger(__name__)
 
@@ -74,22 +600,22 @@ def _get_backend() -> str:
     Falls back to whichever API key is present for users who configured
     keys manually without running setup.
     """
-    configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in ("parallel", "firecrawl", "tavily", "exa"):
+    configured = _load_web_config().get("backend", "").lower().strip()
+    if configured in ("parallel", "firecrawl", "tavily"):
         return configured
 
-    # Fallback for manual / legacy config — pick highest-priority backend
-    # that has a key configured.  Order: firecrawl > parallel > tavily > exa.
-    for backend, keys in [
-        ("firecrawl", ("FIRECRAWL_API_KEY", "FIRECRAWL_API_URL")),
-        ("parallel",  ("PARALLEL_API_KEY",)),
-        ("tavily",    ("TAVILY_API_KEY",)),
-        ("exa",       ("EXA_API_KEY",)),
-    ]:
-        if any(_has_env(k) for k in keys):
-            return backend
+    # Fallback for manual / legacy config — use whichever key is present.
+    has_firecrawl = _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL")
+    has_parallel = _has_env("PARALLEL_API_KEY")
+    has_tavily = _has_env("TAVILY_API_KEY")
 
-    return "firecrawl"  # default (backward compat)
+    if has_tavily and not has_firecrawl and not has_parallel:
+        return "tavily"
+    if has_parallel and not has_firecrawl:
+        return "parallel"
+
+    # Default to firecrawl (backward compat, or when both are set)
+    return "firecrawl"
 
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
 
@@ -417,16 +943,7 @@ Create a markdown summary that captures all key information in a well-organized,
             if model:
                 call_kwargs["model"] = model
             response = await async_call_llm(**call_kwargs)
-            content = extract_content_or_reasoning(response)
-            if content:
-                return content
-            # Reasoning-only / empty response — let the retry loop handle it
-            logger.warning("LLM returned empty content (attempt %d/%d), retrying", attempt + 1, max_retries)
-            if attempt < max_retries - 1:
-                await asyncio.sleep(retry_delay)
-                retry_delay = min(retry_delay * 2, 60)
-                continue
-            return content  # Return whatever we got after exhausting retries
+            return response.choices[0].message.content.strip()
         except RuntimeError:
             logger.warning("No auxiliary model available for web content processing")
             return None
@@ -545,14 +1062,8 @@ Create a single, unified markdown summary."""
         if model:
             call_kwargs["model"] = model
         response = await async_call_llm(**call_kwargs)
-        final_summary = extract_content_or_reasoning(response)
-
-        # Retry once on empty content (reasoning-only response)
-        if not final_summary:
-            logger.warning("Synthesis LLM returned empty content, retrying once")
-            response = await async_call_llm(**call_kwargs)
-            final_summary = extract_content_or_reasoning(response)
-
+        final_summary = response.choices[0].message.content.strip()
+        
         # Enforce hard cap
         if len(final_summary) > max_output_size:
             final_summary = final_summary[:max_output_size] + "\n\n[... summary truncated for context management ...]"
@@ -606,91 +1117,6 @@ def clean_base64_images(text: str) -> str:
     return cleaned_text
 
 
-# ─── Exa Client ──────────────────────────────────────────────────────────────
-
-_exa_client = None
-
-def _get_exa_client():
-    """Get or create the Exa client (lazy initialization).
-
-    Requires EXA_API_KEY environment variable.
-    """
-    from exa_py import Exa
-    global _exa_client
-    if _exa_client is None:
-        api_key = os.getenv("EXA_API_KEY")
-        if not api_key:
-            raise ValueError(
-                "EXA_API_KEY environment variable not set. "
-                "Get your API key at https://exa.ai"
-            )
-        _exa_client = Exa(api_key=api_key)
-        _exa_client.headers["x-exa-integration"] = "hermes-agent"
-    return _exa_client
-
-
-# ─── Exa Search & Extract Helpers ─────────────────────────────────────────────
-
-def _exa_search(query: str, limit: int = 10) -> dict:
-    """Search using the Exa SDK and return results as a dict."""
-    from tools.interrupt import is_interrupted
-    if is_interrupted():
-        return {"error": "Interrupted", "success": False}
-
-    logger.info("Exa search: '%s' (limit=%d)", query, limit)
-    response = _get_exa_client().search(
-        query,
-        num_results=limit,
-        contents={
-            "highlights": True,
-        },
-    )
-
-    web_results = []
-    for i, result in enumerate(response.results or []):
-        highlights = result.highlights or []
-        web_results.append({
-            "url": result.url or "",
-            "title": result.title or "",
-            "description": " ".join(highlights) if highlights else "",
-            "position": i + 1,
-        })
-
-    return {"success": True, "data": {"web": web_results}}
-
-
-def _exa_extract(urls: List[str]) -> List[Dict[str, Any]]:
-    """Extract content from URLs using the Exa SDK.
-
-    Returns a list of result dicts matching the structure expected by the
-    LLM post-processing pipeline (url, title, content, metadata).
-    """
-    from tools.interrupt import is_interrupted
-    if is_interrupted():
-        return [{"url": u, "error": "Interrupted", "title": ""} for u in urls]
-
-    logger.info("Exa extract: %d URL(s)", len(urls))
-    response = _get_exa_client().get_contents(
-        urls,
-        text=True,
-    )
-
-    results = []
-    for result in response.results or []:
-        content = result.text or ""
-        url = result.url or ""
-        title = result.title or ""
-        results.append({
-            "url": url,
-            "title": title,
-            "content": content,
-            "raw_content": content,
-            "metadata": {"sourceURL": url, "title": title},
-        })
-
-    return results
-
-
 # ─── Parallel Search & Extract Helpers ────────────────────────────────────────
 
 def _parallel_search(query: str, limit: int = 5) -> dict:
@@ -704,24 +1130,44 @@ def _parallel_search(query: str, limit: int = 5) -> dict:
         mode = "agentic"
 
     logger.info("Parallel search: '%s' (mode=%s, limit=%d)", query, mode, limit)
-    response = _get_parallel_client().beta.search(
-        search_queries=[query],
-        objective=query,
-        mode=mode,
-        max_results=min(limit, 20),
-    )
+    
+    try:
+        client = _get_parallel_client()
+        if client is None:
+            return {"error": "Parallel client not initialized", "success": False}
+        
+        response = client.beta.search(
+            search_queries=[query],
+            objective=query,
+            mode=mode,
+            max_results=min(limit, 20),
+        )
 
-    web_results = []
-    for i, result in enumerate(response.results or []):
-        excerpts = result.excerpts or []
-        web_results.append({
-            "url": result.url or "",
-            "title": result.title or "",
-            "description": " ".join(excerpts) if excerpts else "",
-            "position": i + 1,
-        })
+        if response is None:
+            logger.error("Parallel search returned None response")
+            return {"error": "Parallel search returned no response", "success": False}
 
-    return {"success": True, "data": {"web": web_results}}
+        web_results = []
+        for i, result in enumerate(response.results or []):
+            excerpts = result.excerpts or []
+            web_results.append({
+                "url": result.url or "",
+                "title": result.title or "",
+                "description": " ".join(excerpts) if excerpts else "",
+                "position": i + 1,
+            })
+
+        return {"success": True, "data": {"web": web_results}}
+    
+    except AttributeError as e:
+        # Catch "NoneType has no attribute" errors from SDK internals
+        error_msg = f"Parallel SDK error: {str(e)}"
+        logger.error(error_msg)
+        return {"error": error_msg, "success": False}
+    except Exception as e:
+        error_msg = f"Parallel search failed: {str(e)}"
+        logger.error(error_msg)
+        return {"error": error_msg, "success": False}
 
 
 async def _parallel_extract(urls: List[str]) -> List[Dict[str, Any]]:
@@ -821,15 +1267,6 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         backend = _get_backend()
         if backend == "parallel":
             response_data = _parallel_search(query, limit)
-            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
-            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
-            debug_call_data["final_response_size"] = len(result_json)
-            _debug.log_call("web_search_tool", debug_call_data)
-            _debug.save()
-            return result_json
-
-        if backend == "exa":
-            response_data = _exa_search(query, limit)
             debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
             result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
             debug_call_data["final_response_size"] = len(result_json)
@@ -972,157 +1409,136 @@ async def web_extract_tool(
     try:
         logger.info("Extracting content from %d URL(s)", len(urls))
 
-        # ── SSRF protection — filter out private/internal URLs before any backend ──
-        safe_urls = []
-        ssrf_blocked: List[Dict[str, Any]] = []
-        for url in urls:
-            if not is_safe_url(url):
-                ssrf_blocked.append({
-                    "url": url, "title": "", "content": "",
-                    "error": "Blocked: URL targets a private or internal network address",
-                })
-            else:
-                safe_urls.append(url)
+        # Dispatch to the configured backend
+        backend = _get_backend()
 
-        # Dispatch only safe URLs to the configured backend
-        if not safe_urls:
-            results = []
+        if backend == "parallel":
+            results = await _parallel_extract(urls)
+        elif backend == "tavily":
+            logger.info("Tavily extract: %d URL(s)", len(urls))
+            raw = _tavily_request("extract", {
+                "urls": urls,
+                "include_images": False,
+            })
+            results = _normalize_tavily_documents(raw, fallback_url=urls[0] if urls else "")
         else:
-            backend = _get_backend()
-
-            if backend == "parallel":
-                results = await _parallel_extract(safe_urls)
-            elif backend == "exa":
-                results = _exa_extract(safe_urls)
-            elif backend == "tavily":
-                logger.info("Tavily extract: %d URL(s)", len(safe_urls))
-                raw = _tavily_request("extract", {
-                    "urls": safe_urls,
-                    "include_images": False,
-                })
-                results = _normalize_tavily_documents(raw, fallback_url=safe_urls[0] if safe_urls else "")
+            # ── Firecrawl extraction ──
+            # Determine requested formats for Firecrawl v2
+            formats: List[str] = []
+            if format == "markdown":
+                formats = ["markdown"]
+            elif format == "html":
+                formats = ["html"]
             else:
-                # ── Firecrawl extraction ──
-                # Determine requested formats for Firecrawl v2
-                formats: List[str] = []
-                if format == "markdown":
-                    formats = ["markdown"]
-                elif format == "html":
-                    formats = ["html"]
-                else:
-                    # Default: request markdown for LLM-readiness and include html as backup
-                    formats = ["markdown", "html"]
+                # Default: request markdown for LLM-readiness and include html as backup
+                formats = ["markdown", "html"]
 
-                # Always use individual scraping for simplicity and reliability
-                # Batch scraping adds complexity without much benefit for small numbers of URLs
-                results: List[Dict[str, Any]] = []
+            # Always use individual scraping for simplicity and reliability
+            # Batch scraping adds complexity without much benefit for small numbers of URLs
+            results: List[Dict[str, Any]] = []
 
-                from tools.interrupt import is_interrupted as _is_interrupted
-                for url in safe_urls:
-                    if _is_interrupted():
-                        results.append({"url": url, "error": "Interrupted", "title": ""})
-                        continue
+            from tools.interrupt import is_interrupted as _is_interrupted
+            for url in urls:
+                if _is_interrupted():
+                    results.append({"url": url, "error": "Interrupted", "title": ""})
+                    continue
 
-                    # Website policy check — block before fetching
-                    blocked = check_website_access(url)
-                    if blocked:
-                        logger.info("Blocked web_extract for %s by rule %s", blocked["host"], blocked["rule"])
+                # Website policy check — block before fetching
+                blocked = check_website_access(url)
+                if blocked:
+                    logger.info("Blocked web_extract for %s by rule %s", blocked["host"], blocked["rule"])
+                    results.append({
+                        "url": url, "title": "", "content": "",
+                        "error": blocked["message"],
+                        "blocked_by_policy": {"host": blocked["host"], "rule": blocked["rule"], "source": blocked["source"]},
+                    })
+                    continue
+
+                try:
+                    logger.info("Scraping: %s", url)
+                    scrape_result = _get_firecrawl_client().scrape(
+                        url=url,
+                        formats=formats
+                    )
+
+                    # Process the result - properly handle object serialization
+                    metadata = {}
+                    title = ""
+                    content_markdown = None
+                    content_html = None
+
+                    # Extract data from the scrape result
+                    if hasattr(scrape_result, 'model_dump'):
+                        # Pydantic model - use model_dump to get dict
+                        result_dict = scrape_result.model_dump()
+                        content_markdown = result_dict.get('markdown')
+                        content_html = result_dict.get('html')
+                        metadata = result_dict.get('metadata', {})
+                    elif hasattr(scrape_result, '__dict__'):
+                        # Regular object with attributes
+                        content_markdown = getattr(scrape_result, 'markdown', None)
+                        content_html = getattr(scrape_result, 'html', None)
+
+                        # Handle metadata - convert to dict if it's an object
+                        metadata_obj = getattr(scrape_result, 'metadata', {})
+                        if hasattr(metadata_obj, 'model_dump'):
+                            metadata = metadata_obj.model_dump()
+                        elif hasattr(metadata_obj, '__dict__'):
+                            metadata = metadata_obj.__dict__
+                        elif isinstance(metadata_obj, dict):
+                            metadata = metadata_obj
+                        else:
+                            metadata = {}
+                    elif isinstance(scrape_result, dict):
+                        # Already a dictionary
+                        content_markdown = scrape_result.get('markdown')
+                        content_html = scrape_result.get('html')
+                        metadata = scrape_result.get('metadata', {})
+
+                    # Ensure metadata is a dict (not an object)
+                    if not isinstance(metadata, dict):
+                        if hasattr(metadata, 'model_dump'):
+                            metadata = metadata.model_dump()
+                        elif hasattr(metadata, '__dict__'):
+                            metadata = metadata.__dict__
+                        else:
+                            metadata = {}
+
+                    # Get title from metadata
+                    title = metadata.get("title", "")
+
+                    # Re-check final URL after redirect
+                    final_url = metadata.get("sourceURL", url)
+                    final_blocked = check_website_access(final_url)
+                    if final_blocked:
+                        logger.info("Blocked redirected web_extract for %s by rule %s", final_blocked["host"], final_blocked["rule"])
                         results.append({
-                            "url": url, "title": "", "content": "",
-                            "error": blocked["message"],
-                            "blocked_by_policy": {"host": blocked["host"], "rule": blocked["rule"], "source": blocked["source"]},
+                            "url": final_url, "title": title, "content": "", "raw_content": "",
+                            "error": final_blocked["message"],
+                            "blocked_by_policy": {"host": final_blocked["host"], "rule": final_blocked["rule"], "source": final_blocked["source"]},
                         })
                         continue
 
-                    try:
-                        logger.info("Scraping: %s", url)
-                        scrape_result = _get_firecrawl_client().scrape(
-                            url=url,
-                            formats=formats
-                        )
+                    # Choose content based on requested format
+                    chosen_content = content_markdown if (format == "markdown" or (format is None and content_markdown)) else content_html or content_markdown or ""
 
-                        # Process the result - properly handle object serialization
-                        metadata = {}
-                        title = ""
-                        content_markdown = None
-                        content_html = None
+                    results.append({
+                        "url": final_url,
+                        "title": title,
+                        "content": chosen_content,
+                        "raw_content": chosen_content,
+                        "metadata": metadata  # Now guaranteed to be a dict
+                    })
 
-                        # Extract data from the scrape result
-                        if hasattr(scrape_result, 'model_dump'):
-                            # Pydantic model - use model_dump to get dict
-                            result_dict = scrape_result.model_dump()
-                            content_markdown = result_dict.get('markdown')
-                            content_html = result_dict.get('html')
-                            metadata = result_dict.get('metadata', {})
-                        elif hasattr(scrape_result, '__dict__'):
-                            # Regular object with attributes
-                            content_markdown = getattr(scrape_result, 'markdown', None)
-                            content_html = getattr(scrape_result, 'html', None)
-
-                            # Handle metadata - convert to dict if it's an object
-                            metadata_obj = getattr(scrape_result, 'metadata', {})
-                            if hasattr(metadata_obj, 'model_dump'):
-                                metadata = metadata_obj.model_dump()
-                            elif hasattr(metadata_obj, '__dict__'):
-                                metadata = metadata_obj.__dict__
-                            elif isinstance(metadata_obj, dict):
-                                metadata = metadata_obj
-                            else:
-                                metadata = {}
-                        elif isinstance(scrape_result, dict):
-                            # Already a dictionary
-                            content_markdown = scrape_result.get('markdown')
-                            content_html = scrape_result.get('html')
-                            metadata = scrape_result.get('metadata', {})
-
-                        # Ensure metadata is a dict (not an object)
-                        if not isinstance(metadata, dict):
-                            if hasattr(metadata, 'model_dump'):
-                                metadata = metadata.model_dump()
-                            elif hasattr(metadata, '__dict__'):
-                                metadata = metadata.__dict__
-                            else:
-                                metadata = {}
-
-                        # Get title from metadata
-                        title = metadata.get("title", "")
-
-                        # Re-check final URL after redirect
-                        final_url = metadata.get("sourceURL", url)
-                        final_blocked = check_website_access(final_url)
-                        if final_blocked:
-                            logger.info("Blocked redirected web_extract for %s by rule %s", final_blocked["host"], final_blocked["rule"])
-                            results.append({
-                                "url": final_url, "title": title, "content": "", "raw_content": "",
-                                "error": final_blocked["message"],
-                                "blocked_by_policy": {"host": final_blocked["host"], "rule": final_blocked["rule"], "source": final_blocked["source"]},
-                            })
-                            continue
-
-                        # Choose content based on requested format
-                        chosen_content = content_markdown if (format == "markdown" or (format is None and content_markdown)) else content_html or content_markdown or ""
-
-                        results.append({
-                            "url": final_url,
-                            "title": title,
-                            "content": chosen_content,
-                            "raw_content": chosen_content,
-                            "metadata": metadata  # Now guaranteed to be a dict
-                        })
-
-                    except Exception as scrape_err:
-                        logger.debug("Scrape failed for %s: %s", url, scrape_err)
-                        results.append({
-                            "url": url,
-                            "title": "",
-                            "content": "",
-                            "raw_content": "",
-                            "error": str(scrape_err)
-                        })
-
-        # Merge any SSRF-blocked results back in
-        if ssrf_blocked:
-            results = ssrf_blocked + results
+                except Exception as scrape_err:
+                    logger.debug("Scrape failed for %s: %s", url, scrape_err)
+                    results.append({
+                        "url": url,
+                        "title": "",
+                        "content": "",
+                        "raw_content": "",
+                        "error": str(scrape_err)
+                    })
 
         response = {"results": results}
         
@@ -1235,6 +1651,12 @@ async def web_extract_tool(
         _debug.log_call("web_extract_tool", debug_call_data)
         _debug.save()
         
+        # Store extracted pages in persistent storage
+        try:
+            store_pages_from_results(trimmed_results, source_tool="web_extract")
+        except Exception as store_err:
+            logger.debug("Failed to store pages: %s", store_err)
+        
         return cleaned_result
             
     except Exception as e:
@@ -1305,11 +1727,6 @@ async def web_crawl_tool(
             if not url.startswith(('http://', 'https://')):
                 url = f'https://{url}'
 
-            # SSRF protection — block private/internal addresses
-            if not is_safe_url(url):
-                return json.dumps({"results": [{"url": url, "title": "", "content": "",
-                    "error": "Blocked: URL targets a private or internal network address"}]}, ensure_ascii=False)
-
             # Website policy check
             blocked = check_website_access(url)
             if blocked:
@@ -1365,7 +1782,7 @@ async def web_crawl_tool(
 
                 tasks = [_process_tavily_crawl(r) for r in response.get('results', [])]
                 processed_results = await asyncio.gather(*tasks)
-                for result, metrics, status in processed_results:
+                for _result, metrics, status in processed_results:
                     if status == "processed":
                         debug_call_data["compression_metrics"].append(metrics)
                         debug_call_data["pages_processed_with_llm"] += 1
@@ -1377,6 +1794,13 @@ async def web_crawl_tool(
             debug_call_data["final_response_size"] = len(cleaned_result)
             _debug.log_call("web_crawl_tool", debug_call_data)
             _debug.save()
+            
+            # Store crawled pages in persistent storage
+            try:
+                store_pages_from_results(trimmed_results, source_tool="web_crawl")
+            except Exception as store_err:
+                logger.debug("Failed to store crawled pages: %s", store_err)
+            
             return cleaned_result
 
         # web_crawl requires Firecrawl — Parallel has no crawl API
@@ -1395,11 +1819,6 @@ async def web_crawl_tool(
         instructions_text = f" with instructions: '{instructions}'" if instructions else ""
         logger.info("Crawling %s%s", url, instructions_text)
         
-        # SSRF protection — block private/internal addresses
-        if not is_safe_url(url):
-            return json.dumps({"results": [{"url": url, "title": "", "content": "",
-                "error": "Blocked: URL targets a private or internal network address"}]}, ensure_ascii=False)
-
         # Website policy check — block before crawling
         blocked = check_website_access(url)
         if blocked:
@@ -1639,6 +2058,12 @@ async def web_crawl_tool(
         _debug.log_call("web_crawl_tool", debug_call_data)
         _debug.save()
         
+        # Store crawled pages in persistent storage
+        try:
+            store_pages_from_results(trimmed_results, source_tool="web_crawl")
+        except Exception as store_err:
+            logger.debug("Failed to store crawled pages: %s", store_err)
+        
         return cleaned_result
         
     except Exception as e:
@@ -1664,10 +2089,9 @@ def check_firecrawl_api_key() -> bool:
 
 
 def check_web_api_key() -> bool:
-    """Check if any web backend API key is available (Exa, Parallel, Firecrawl, or Tavily)."""
+    """Check if any web backend API key is available (Parallel, Firecrawl, or Tavily)."""
     return bool(
-        os.getenv("EXA_API_KEY")
-        or os.getenv("PARALLEL_API_KEY")
+        os.getenv("PARALLEL_API_KEY")
         or os.getenv("FIRECRAWL_API_KEY")
         or os.getenv("FIRECRAWL_API_URL")
         or os.getenv("TAVILY_API_KEY")
@@ -1706,9 +2130,7 @@ if __name__ == "__main__":
     if web_available:
         backend = _get_backend()
         print(f"✅ Web backend: {backend}")
-        if backend == "exa":
-            print("   Using Exa API (https://exa.ai)")
-        elif backend == "parallel":
+        if backend == "parallel":
             print("   Using Parallel API (https://parallel.ai)")
         elif backend == "tavily":
             print("   Using Tavily API (https://tavily.com)")
@@ -1716,7 +2138,7 @@ if __name__ == "__main__":
             print("   Using Firecrawl API (https://firecrawl.dev)")
     else:
         print("❌ No web search backend configured")
-        print("Set EXA_API_KEY, PARALLEL_API_KEY, TAVILY_API_KEY, or FIRECRAWL_API_KEY")
+        print("Set PARALLEL_API_KEY, TAVILY_API_KEY, or FIRECRAWL_API_KEY")
 
     if not nous_available:
         print("❌ No auxiliary model available for LLM content processing")
@@ -1780,7 +2202,7 @@ if __name__ == "__main__":
     print("  # - Final processed results")
     print("  # Logs saved to: ./logs/web_tools_debug_UUID.json")
     
-    print("\n📝 Run 'python test_web_tools_llm.py' to test LLM processing capabilities")
+    print(f"\n📝 Run 'python test_web_tools_llm.py' to test LLM processing capabilities")
 
 
 # ---------------------------------------------------------------------------
@@ -1826,7 +2248,7 @@ registry.register(
     schema=WEB_SEARCH_SCHEMA,
     handler=lambda args, **kw: web_search_tool(args.get("query", ""), limit=5),
     check_fn=check_web_api_key,
-    requires_env=["EXA_API_KEY", "PARALLEL_API_KEY", "FIRECRAWL_API_KEY", "TAVILY_API_KEY"],
+    requires_env=["PARALLEL_API_KEY", "FIRECRAWL_API_KEY", "TAVILY_API_KEY"],
     emoji="🔍",
 )
 registry.register(
@@ -1836,7 +2258,145 @@ registry.register(
     handler=lambda args, **kw: web_extract_tool(
         args.get("urls", [])[:5] if isinstance(args.get("urls"), list) else [], "markdown"),
     check_fn=check_web_api_key,
-    requires_env=["EXA_API_KEY", "PARALLEL_API_KEY", "FIRECRAWL_API_KEY", "TAVILY_API_KEY"],
+    requires_env=["PARALLEL_API_KEY", "FIRECRAWL_API_KEY", "TAVILY_API_KEY"],
     is_async=True,
     emoji="📄",
+)
+
+# ─── Page Storage Tools Registry ────────────────────────────────────────────
+
+WEB_PAGE_SEARCH_SCHEMA = {
+    "name": "web_page_search",
+    "description": "Search over previously extracted/saved web pages using full-text search. Use this to find information in pages you've previously extracted with web_extract or web_crawl.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Search query to find in saved pages"
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Maximum number of results to return (default: 10)",
+                "default": 10
+            }
+        },
+        "required": ["query"]
+    }
+}
+
+WEB_PAGE_LIST_SCHEMA = {
+    "name": "web_page_list",
+    "description": "List all saved web pages. Shows pages previously extracted with web_extract or web_crawl.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "limit": {
+                "type": "integer",
+                "description": "Maximum number of pages to list (default: 50)",
+                "default": 50
+            },
+            "offset": {
+                "type": "integer",
+                "description": "Offset for pagination (default: 0)",
+                "default": 0
+            },
+            "source": {
+                "type": "string",
+                "description": "Filter by source tool: 'web_extract' or 'web_crawl'"
+            }
+        }
+    }
+}
+
+WEB_PAGE_GET_SCHEMA = {
+    "name": "web_page_get",
+    "description": "Retrieve a specific saved page by URL or page ID. Returns full content and metadata.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "url": {
+                "type": "string",
+                "description": "URL of the page to retrieve"
+            },
+            "page_id": {
+                "type": "integer",
+                "description": "ID of the page to retrieve"
+            }
+        }
+    }
+}
+
+WEB_PAGE_DELETE_SCHEMA = {
+    "name": "web_page_delete",
+    "description": "Delete a saved page from storage by URL or page ID.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "url": {
+                "type": "string",
+                "description": "URL of the page to delete"
+            },
+            "page_id": {
+                "type": "integer",
+                "description": "ID of the page to delete"
+            }
+        }
+    }
+}
+
+WEB_PAGE_STATS_SCHEMA = {
+    "name": "web_page_stats",
+    "description": "Get statistics about saved web pages (count, size, storage location).",
+    "parameters": {
+        "type": "object",
+        "properties": {}
+    }
+}
+
+# Register page storage tools
+registry.register(
+    name="web_page_search",
+    toolset="web",
+    schema=WEB_PAGE_SEARCH_SCHEMA,
+    handler=lambda args, **kw: web_page_search_tool(
+        args.get("query", ""), limit=args.get("limit", 10)),
+    emoji="🔎",
+)
+
+registry.register(
+    name="web_page_list",
+    toolset="web",
+    schema=WEB_PAGE_LIST_SCHEMA,
+    handler=lambda args, **kw: web_page_list_tool(
+        limit=args.get("limit", 50),
+        offset=args.get("offset", 0),
+        source=args.get("source")),
+    emoji="📋",
+)
+
+registry.register(
+    name="web_page_get",
+    toolset="web",
+    schema=WEB_PAGE_GET_SCHEMA,
+    handler=lambda args, **kw: web_page_get_tool(
+        url=args.get("url"), page_id=args.get("page_id")),
+    emoji="📖",
+)
+
+registry.register(
+    name="web_page_delete",
+    toolset="web",
+    schema=WEB_PAGE_DELETE_SCHEMA,
+    handler=lambda args, **kw: web_page_delete_tool(
+        url=args.get("url"), page_id=args.get("page_id")),
+    emoji="🗑️",
+)
+
+registry.register(
+    name="web_page_stats",
+    toolset="web",
+    schema=WEB_PAGE_STATS_SCHEMA,
+    handler=lambda args, **kw: web_page_stats_tool(),
+    emoji="📊",
 )

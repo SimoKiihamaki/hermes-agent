@@ -26,11 +26,27 @@ from tools.vision_tools import (
 # ---------------------------------------------------------------------------
 
 
+def _mock_is_safe_url(url: str) -> bool:
+    """Mock for SSRF check in tests (no DNS access needed)."""
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    hostname = parsed.hostname or ""
+    # Block private/internal addresses
+    blocked_hosts = {"localhost", "127.0.0.1", "0.0.0.0", "::1", "metadata.google.internal"}
+    if hostname.lower() in blocked_hosts or hostname.startswith("127.") or hostname.startswith("192.168."):
+        return False
+    # Block private IP patterns
+    if hostname.startswith("10.") or hostname.startswith("172."):
+        return False
+    return True
+
+
 class TestValidateImageUrl:
     """Tests for URL validation, including urlparse-based netloc check."""
 
     def test_valid_https_url(self):
-        assert _validate_image_url("https://example.com/image.jpg") is True
+        with patch("tools.url_safety.is_safe_url", _mock_is_safe_url):
+            assert _validate_image_url("https://example.com/image.jpg") is True
 
     def test_valid_http_url(self):
         with patch("tools.url_safety.socket.getaddrinfo", return_value=[
@@ -59,7 +75,8 @@ class TestValidateImageUrl:
         assert _validate_image_url("http://example.com:8080/image.png") is True
 
     def test_valid_url_with_path_only(self):
-        assert _validate_image_url("https://example.com/") is True
+        with patch("tools.url_safety.is_safe_url", _mock_is_safe_url):
+            assert _validate_image_url("https://example.com/") is True
 
     def test_rejects_empty_string(self):
         assert _validate_image_url("") is False

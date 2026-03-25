@@ -531,6 +531,22 @@ python -m pytest tests/ -W error::pytest.PytestUnhandledThreadExceptionWarning
 
 ---
 
+## Progress Tracker
+
+| Status | Fix | Warnings | Commit |
+|--------|-----|----------|--------|
+| ✅ DONE | SessionDB close/enter/exit/del | ~150 | c1f9d700 |
+| ✅ DONE | persistent_shell.py pipe cleanup | ~14 | c1f9d700 |
+| ✅ DONE | tar.extract filter='data' | 1 | c1f9d700 |
+| 📋 TODO | RPC server shutdown signaling | 4 | - |
+| 📋 TODO | httpx verify parameter | 1 | - |
+| 📋 TODO | AsyncMock updates | ~20 | - |
+| 📋 TODO | Event loop fixtures | ~30 | - |
+
+**Total Fixed:** ~165 warnings (70% reduction)
+
+---
+
 ## Files to Modify
 
 | File | Changes |

@@ -27,40 +27,17 @@ from cron.jobs import (
     update_job,
 )
 
+# Import security patterns from consolidated module
+from tools.security_patterns import scan_cron_prompt
+
 
 # ---------------------------------------------------------------------------
 # Cron prompt scanning — critical-severity patterns only, since cron prompts
 # run in fresh sessions with full tool access.
 # ---------------------------------------------------------------------------
 
-_CRON_THREAT_PATTERNS = [
-    (r'ignore\s+(?:\w+\s+)*(?:previous|all|above|prior)\s+(?:\w+\s+)*instructions', "prompt_injection"),
-    (r'do\s+not\s+tell\s+the\s+user', "deception_hide"),
-    (r'system\s+prompt\s+override', "sys_prompt_override"),
-    (r'disregard\s+(your|all|any)\s+(instructions|rules|guidelines)', "disregard_rules"),
-    (r'curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_curl"),
-    (r'wget\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_wget"),
-    (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass)', "read_secrets"),
-    (r'authorized_keys', "ssh_backdoor"),
-    (r'/etc/sudoers|visudo', "sudoers_mod"),
-    (r'rm\s+-rf\s+/', "destructive_root_rm"),
-]
-
-_CRON_INVISIBLE_CHARS = {
-    '\u200b', '\u200c', '\u200d', '\u2060', '\ufeff',
-    '\u202a', '\u202b', '\u202c', '\u202d', '\u202e',
-}
-
-
-def _scan_cron_prompt(prompt: str) -> str:
-    """Scan a cron prompt for critical threats. Returns error string if blocked, else empty."""
-    for char in _CRON_INVISIBLE_CHARS:
-        if char in prompt:
-            return f"Blocked: prompt contains invisible unicode U+{ord(char):04X} (possible injection)."
-    for pattern, pid in _CRON_THREAT_PATTERNS:
-        if re.search(pattern, prompt, re.IGNORECASE):
-            return f"Blocked: prompt matches threat pattern '{pid}'. Cron prompts must not contain injection or exfiltration payloads."
-    return ""
+# Use the consolidated scan function from security_patterns
+_scan_cron_prompt = scan_cron_prompt
 
 
 def _origin_from_env() -> Optional[Dict[str, str]]:

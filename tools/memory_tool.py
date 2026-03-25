@@ -33,6 +33,9 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
+# Import security patterns from consolidated module
+from tools.security_patterns import scan_memory_content
+
 logger = logging.getLogger(__name__)
 
 # Where memory files live
@@ -46,44 +49,8 @@ ENTRY_DELIMITER = "\n§\n"
 # in content that gets injected into the system prompt.
 # ---------------------------------------------------------------------------
 
-_MEMORY_THREAT_PATTERNS = [
-    # Prompt injection
-    (r'ignore\s+(previous|all|above|prior)\s+instructions', "prompt_injection"),
-    (r'you\s+are\s+now\s+', "role_hijack"),
-    (r'do\s+not\s+tell\s+the\s+user', "deception_hide"),
-    (r'system\s+prompt\s+override', "sys_prompt_override"),
-    (r'disregard\s+(your|all|any)\s+(instructions|rules|guidelines)', "disregard_rules"),
-    (r'act\s+as\s+(if|though)\s+you\s+(have\s+no|don\'t\s+have)\s+(restrictions|limits|rules)', "bypass_restrictions"),
-    # Exfiltration via curl/wget with secrets
-    (r'curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_curl"),
-    (r'wget\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_wget"),
-    (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass|\.npmrc|\.pypirc)', "read_secrets"),
-    # Persistence via shell rc
-    (r'authorized_keys', "ssh_backdoor"),
-    (r'\$HOME/\.ssh|\~/\.ssh', "ssh_access"),
-    (r'\$HOME/\.hermes/\.env|\~/\.hermes/\.env', "hermes_env"),
-]
-
-# Subset of invisible chars for injection detection
-_INVISIBLE_CHARS = {
-    '\u200b', '\u200c', '\u200d', '\u2060', '\ufeff',
-    '\u202a', '\u202b', '\u202c', '\u202d', '\u202e',
-}
-
-
-def _scan_memory_content(content: str) -> Optional[str]:
-    """Scan memory content for injection/exfil patterns. Returns error string if blocked."""
-    # Check invisible unicode
-    for char in _INVISIBLE_CHARS:
-        if char in content:
-            return f"Blocked: content contains invisible unicode character U+{ord(char):04X} (possible injection)."
-
-    # Check threat patterns
-    for pattern, pid in _MEMORY_THREAT_PATTERNS:
-        if re.search(pattern, content, re.IGNORECASE):
-            return f"Blocked: content matches threat pattern '{pid}'. Memory entries are injected into the system prompt and must not contain injection or exfiltration payloads."
-
-    return None
+# Use the consolidated scan function from security_patterns
+_scan_memory_content = scan_memory_content
 
 
 class MemoryStore:

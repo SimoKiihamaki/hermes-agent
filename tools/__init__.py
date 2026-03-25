@@ -165,7 +165,7 @@ from .hermes_autodev_tool import (
 )
 
 # File tools have no external requirements - they use the terminal backend
-def check_file_requirements():
+def check_file_requirements() -> bool:
     """File tools only require terminal backend to be available."""
     from .terminal_tool import check_terminal_requirements
     return check_terminal_requirements()

@@ -161,12 +161,14 @@ def shell_quote(s: str) -> str:
     return shlex.quote(s)
 
 
-def retry(fn, max_attempts=3, delay=2):
+from typing import Any
+
+def retry(fn, max_attempts: int = 3, delay: int = 2) -> Any:
     """Retry a function up to max_attempts times with exponential backoff.
     Use for transient failures (network errors, API rate limits):
         result = retry(lambda: terminal("gh issue list ..."))
     """
-    last_err = None
+    last_err: Exception | None = None
     for attempt in range(max_attempts):
         try:
             return fn()

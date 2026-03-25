@@ -103,7 +103,7 @@ _session_approved: dict[str, set] = {}
 _permanent_approved: set = set()
 
 
-def submit_pending(session_key: str, approval: dict):
+def submit_pending(session_key: str, approval: dict) -> None:
     """Store a pending approval request for a session."""
     with _lock:
         _pending[session_key] = approval

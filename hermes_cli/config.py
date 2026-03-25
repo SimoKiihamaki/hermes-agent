@@ -66,7 +66,7 @@ def get_project_root() -> Path:
     """Get the project installation directory."""
     return Path(__file__).parent.parent.resolve()
 
-def _secure_dir(path):
+def _secure_dir(path) -> None:
     """Set directory to owner-only access (0700). No-op on Windows."""
     try:
         os.chmod(path, 0o700)
@@ -92,7 +92,7 @@ def _ensure_default_soul_md(home: Path) -> None:
     _secure_file(soul_path)
 
 
-def ensure_hermes_home():
+def ensure_hermes_home() -> None:
     """Ensure ~/.hermes directory structure exists with secure permissions."""
     home = get_hermes_home()
     home.mkdir(parents=True, exist_ok=True)

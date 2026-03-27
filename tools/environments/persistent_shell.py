@@ -110,6 +110,10 @@ class PersistentShellMixin:
         if self._session_id:
             self._cleanup_temp_files()
 
+        # Wait for drain thread to finish before closing pipes
+        if hasattr(self, "_drain_thread") and self._drain_thread.is_alive():
+            self._drain_thread.join(timeout=1.0)
+
         # Close all pipe file handles explicitly to avoid ResourceWarning
         for pipe in (self._shell_proc.stdin, self._shell_proc.stdout,
                      self._shell_proc.stderr):
@@ -127,9 +131,6 @@ class PersistentShellMixin:
 
         self._shell_alive = False
         self._shell_proc = None
-
-        if hasattr(self, "_drain_thread") and self._drain_thread.is_alive():
-            self._drain_thread.join(timeout=1.0)
 
     # ------------------------------------------------------------------
     # execute() / cleanup() — shared dispatcher, subclasses inherit
@@ -150,16 +151,29 @@ class PersistentShellMixin:
         if self.persistent:
             self._cleanup_persistent_shell()
 
+    def __del__(self):
+        """Ensure cleanup on garbage collection if cleanup() was not called."""
+        try:
+            self._cleanup_persistent_shell()
+        except Exception:
+            pass
+
     # ------------------------------------------------------------------
     # Shell I/O
     # ------------------------------------------------------------------
 
     def _drain_shell_output(self):
+        stdout = self._shell_proc.stdout
         try:
-            for _ in self._shell_proc.stdout:
+            for _ in stdout:
                 pass
         except Exception:
             pass
+        finally:
+            try:
+                stdout.close()
+            except Exception:
+                pass
         self._shell_alive = False
 
     def _send_to_shell(self, text: str):

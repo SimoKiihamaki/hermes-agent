@@ -231,9 +231,13 @@ def _rpc_server_loop(
     Accept one client connection and dispatch tool-call requests until
     the client disconnects or the call limit is reached.
     """
-    from model_tools import handle_function_call
-
     conn = None
+    try:
+        from model_tools import handle_function_call
+    except ImportError as e:
+        logger.error("RPC server thread failed to import handle_function_call: %s", e, exc_info=True)
+        return
+
     try:
         server_sock.settimeout(5)
         conn, _ = server_sock.accept()
@@ -334,6 +338,9 @@ def _rpc_server_loop(
     except ValueError as e:
         # Happens when accept() returns unexpected value (e.g., in mocked tests)
         logger.debug("RPC listener accept error: %s", e)
+    except Exception as e:
+        # Catch-all for any unhandled exceptions in the RPC server thread
+        logger.error("Unhandled exception in RPC server thread: %s", e, exc_info=True)
     finally:
         if conn:
             try:
@@ -533,8 +540,8 @@ def execute_code(
                     while tail_collected > tail_bytes and tail_buf:
                         oldest = tail_buf.popleft()
                         tail_collected -= len(oldest)
-            except (ValueError, OSError):
-                pass
+            except (ValueError, OSError) as e:
+                logger.debug("Error draining stdout in thread: %s", e, exc_info=True)
             # Transfer final tail to output list
             tail_chunks.extend(tail_buf)
 

@@ -331,6 +331,9 @@ def _rpc_server_loop(
         logger.debug("RPC listener socket timeout")
     except OSError as e:
         logger.debug("RPC listener socket error: %s", e, exc_info=True)
+    except ValueError as e:
+        # Happens when accept() returns unexpected value (e.g., in mocked tests)
+        logger.debug("RPC listener accept error: %s", e)
     finally:
         if conn:
             try:

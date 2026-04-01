@@ -459,3 +459,17 @@ class SessionManager:
 
         _register_task_cwd(session_id, cwd)
         return AIAgent(**kwargs)
+
+    def close(self) -> None:
+        """Close the SessionDB connection if it was created.
+
+        Should be called when the SessionManager is no longer needed,
+        especially in tests, to avoid ResourceWarning for unclosed DBs.
+        """
+        if self._db_instance is not None:
+            try:
+                self._db_instance.close()
+            except Exception:
+                logger.debug("Failed to close SessionDB", exc_info=True)
+            finally:
+                self._db_instance = None

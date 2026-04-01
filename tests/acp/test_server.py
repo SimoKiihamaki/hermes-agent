@@ -33,7 +33,9 @@ from hermes_state import SessionDB
 @pytest.fixture()
 def mock_manager():
     """SessionManager with a mock agent factory."""
-    return SessionManager(agent_factory=lambda: MagicMock(name="MockAIAgent"))
+    mgr = SessionManager(agent_factory=lambda: MagicMock(name="MockAIAgent"))
+    yield mgr
+    mgr.close()
 
 
 @pytest.fixture()
